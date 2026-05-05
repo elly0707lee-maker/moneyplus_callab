@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>4자토크 연구실 · Money Plus</title>
+  <title>Money Plus Board · 4자토크 연구실</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.min.css">
@@ -14,9 +14,17 @@
   <header class="header">
     <div class="logo">
       <div class="logo-stack">
-        <div class="logo-mark">4자토크 연구실</div>
-        <div class="logo-en">MONEY PLUS · BOARD</div>
+        <div class="logo-mark">MONEY PLUS<span class="logo-dot">·</span>BOARD</div>
+        <div class="logo-sub">4자토크 연구실</div>
       </div>
+    </div>
+
+    <div class="header-center">
+      <button id="btn-date" class="date-pill" title="방송 일자 변경">
+        <span class="date-icon">📅</span>
+        <span id="date-display">방송일 미설정</span>
+      </button>
+      <input type="date" id="date-input" class="hidden-date">
     </div>
 
     <div class="header-actions">
@@ -29,19 +37,22 @@
         <span class="plus-icon">＋</span>
         <span>메모 추가</span>
       </button>
+      <div class="kebab-wrap">
+        <button id="btn-menu" class="kebab-btn" title="더보기">⋮</button>
+        <div id="kebab-menu" class="kebab-menu hidden">
+          <button class="kebab-item danger" data-action="reset">
+            <span class="kebab-icon">↺</span>
+            <span>전체 초기화 — 새 방송 시작</span>
+          </button>
+        </div>
+      </div>
     </div>
   </header>
 
   <nav id="filter-bar" class="filter-bar">
-    <button class="filter-pill active" data-filter="all">
-      전체 <span class="count" id="count-all">0</span>
-    </button>
-    <button class="filter-pill" data-filter="confirmed">
-      <span class="icon">✓</span> 확정 <span class="count" id="count-confirmed">0</span>
-    </button>
-    <button class="filter-pill" data-filter="cg">
-      <span class="icon">●</span> CG <span class="count" id="count-cg">0</span>
-    </button>
+    <button class="filter-pill active" data-filter="all">전체 <span class="count" id="count-all">0</span></button>
+    <button class="filter-pill" data-filter="confirmed"><span class="icon">✓</span> 확정 <span class="count" id="count-confirmed">0</span></button>
+    <button class="filter-pill" data-filter="cg"><span class="icon">●</span> CG 있는 메모 <span class="count" id="count-cg">0</span></button>
   </nav>
 
   <main id="board" class="board"></main>
@@ -112,6 +123,20 @@
             <span>캐스터 브리핑</span>
             <span class="cat-en">CASTER</span>
           </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Reset Modal -->
+  <div id="reset-modal" class="modal-backdrop hidden">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div class="modal-header">전체 초기화</div>
+      <p class="modal-desc">현재 보드의 <strong>모든 메모가 삭제</strong>됩니다.<br>되돌릴 수 없어요. 새 방송 준비를 시작하실 거면 진행하세요.</p>
+      <div class="modal-body">
+        <div class="modal-actions">
+          <button id="reset-cancel" class="btn-secondary">취소</button>
+          <button id="reset-confirm" class="btn-danger">전체 초기화</button>
         </div>
       </div>
     </div>
