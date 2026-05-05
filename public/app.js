@@ -1,10 +1,11 @@
-// ===== Money Plus Board · Frontend =====
+// ===== 4자토크 연구실 · Frontend =====
 const socket = io();
 let userName = localStorage.getItem('mp_user_name') || null;
 let notes = [];
 let editingId = null;
 let draggingId = null;
 let dragOffset = { x: 0, y: 0 };
+let activeFilter = 'all';
 
 const board = document.getElementById('board');
 const userNameEl = document.getElementById('user-name');
@@ -12,12 +13,18 @@ const connectedCountEl = document.getElementById('connected-count');
 const tickerEl = document.getElementById('ticker');
 
 const CATEGORY_LABELS = {
-  market:   { ko: '시황',  en: 'MARKET'   },
-  stocks:   { ko: '종목',  en: 'STOCKS'   },
-  schedule: { ko: '일정',  en: 'SCHEDULE' },
-  alert:    { ko: '이슈',  en: 'ALERT'    },
-  memo:     { ko: '메모',  en: 'MEMO'     },
+  index:   { ko: '지수',          en: 'INDEX',    color: '#5290cf' },
+  sector:  { ko: '섹터',          en: 'SECTOR',   color: '#5fa885' },
+  stocks:  { ko: '종목',          en: 'STOCKS',   color: '#d27a5a' },
+  supply:  { ko: '수급',          en: 'SUPPLY',   color: '#8e74bb' },
+  us:      { ko: '미증시',        en: 'US',       color: '#3a5a82' },
+  news:    { ko: '뉴스',          en: 'NEWS',     color: '#b89e44' },
+  caster:  { ko: '캐스터 브리핑', en: 'CASTER',   color: '#b66890' },
 };
+
+function getCat(key) {
+  return CATEGORY_LABELS[key] || { ko: '기타', en: 'OTHER', color: '#8a96a8' };
+}
 
 // ============================================================
 // Init
@@ -30,9 +37,7 @@ function init() {
 // ============================================================
 // Socket events
 // ============================================================
-socket.on('connect', () => {
-  console.log('🟢 connected:', socket.id);
-});
+socket.on('connect', () => console.log('🟢 connected:', socket.id));
 
 socket.on('state', (data) => {
   notes = (data && data.notes) || [];
@@ -43,14 +48,13 @@ socket.on('note_added', (note) => {
   if (notes.find(n => n.id === note.id)) return;
   notes.push(note);
   renderBoard();
-  setTicker(`${note.createdBy}님이 "${CATEGORY_LABELS[note.category]?.ko || '메모'}" 카드를 추가했습니다`);
+  setTicker(`${note.createdBy}님이 [${getCat(note.category).ko}] 메모를 추가했습니다`);
 });
 
 socket.on('note_updated', (note) => {
   const idx = notes.findIndex(n => n.id === note.id);
   if (idx === -1) return;
   notes[idx] = note;
-  // 편집 중이거나 드래그 중인 노트는 다시 그리지 않음
   if (editingId === note.id || draggingId === note.id) return;
   renderBoard();
   setTicker(`${note.lastEditedBy}님이 메모를 수정했습니다`);
@@ -71,24 +75,57 @@ socket.on('disconnect', () => {
 });
 
 // ============================================================
+// Filter
+// ============================================================
+document.querySelectorAll('.filter-pill').forEach(pill => {
+  pill.addEventListener('click', () => {
+    activeFilter = pill.dataset.filter;
+    document.querySelectorAll('.filter-pill').forEach(p => p.classList.toggle('active', p === pill));
+    renderBoard();
+  });
+});
+
+function getVisibleNotes() {
+  if (activeFilter === 'confirmed') return notes.filter(n => n.confirmed);
+  if (activeFilter === 'cg') return notes.filter(n => n.isCG);
+  return notes;
+}
+
+function updateCounts() {
+  document.getElementById('count-all').textContent = notes.length;
+  document.getElementById('count-confirmed').textContent = notes.filter(n => n.confirmed).length;
+  document.getElementById('count-cg').textContent = notes.filter(n => n.isCG).length;
+}
+
+// ============================================================
 // Render
 // ============================================================
 function renderBoard() {
+  updateCounts();
   board.innerHTML = '';
 
-  if (notes.length === 0) {
+  const visible = getVisibleNotes();
+
+  if (visible.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
-    empty.innerHTML = `
-      <div class="empty-state-tag">ON AIR</div>
-      <div class="empty-state-title">아직 메모가 없습니다</div>
-      <div class="empty-state-desc">우측 상단 ＋ 버튼으로 첫 메모를 추가하세요</div>
-    `;
+    if (notes.length === 0) {
+      empty.innerHTML = `
+        <div class="empty-state-title">아직 비어있어요</div>
+        <div class="empty-state-desc">우측 상단 ＋ 버튼으로 첫 메모를 추가해보세요</div>
+      `;
+    } else {
+      const filterName = activeFilter === 'confirmed' ? '확정된' : 'CG로 표시된';
+      empty.innerHTML = `
+        <div class="empty-state-title">${filterName} 메모가 없어요</div>
+        <div class="empty-state-desc">'전체' 필터를 눌러서 모든 메모를 다시 볼 수 있습니다</div>
+      `;
+    }
     board.appendChild(empty);
     return;
   }
 
-  for (const note of notes) {
+  for (const note of visible) {
     board.appendChild(createNoteEl(note));
   }
 }
@@ -96,29 +133,35 @@ function renderBoard() {
 function createNoteEl(note) {
   const el = document.createElement('div');
   el.className = 'note';
+  if (note.confirmed) el.classList.add('confirmed');
   el.dataset.id = note.id;
   el.dataset.category = note.category || 'memo';
   el.style.left = note.x + 'px';
   el.style.top = note.y + 'px';
 
-  const cat = CATEGORY_LABELS[note.category] || CATEGORY_LABELS.memo;
+  const cat = getCat(note.category);
   const text = note.text || '';
   const isEmpty = !text.trim();
 
   el.innerHTML = `
-    <div class="note-banner">
-      <span class="label">
+    <div class="note-head">
+      <span class="chip chip-cat">
+        <span class="cat-dot" style="background:${cat.color};"></span>
         <span>${cat.ko}</span>
-        <span class="label-en">${cat.en}</span>
       </span>
-      <button class="delete-btn" data-action="delete" title="삭제">×</button>
+      ${note.confirmed ? '<span class="chip chip-confirmed">✓ 확정</span>' : ''}
+      ${note.isCG ? '<span class="chip chip-cg">● CG</span>' : ''}
+      <div class="note-actions">
+        <button class="note-action-btn is-confirm ${note.confirmed ? 'active' : ''}" data-action="confirm" title="확정 ${note.confirmed ? '해제' : '표시'}">✓</button>
+        <button class="note-action-btn is-cg ${note.isCG ? 'active' : ''}" data-action="cg" title="CG ${note.isCG ? '해제' : '표시'}">●</button>
+        <button class="note-action-btn is-delete" data-action="delete" title="삭제">×</button>
+      </div>
     </div>
-    <div class="note-source">출처: ${escapeHtml(note.createdBy || '익명')} · 작성 ${formatTime(note.createdAt)}</div>
     <div class="note-body ${isEmpty ? 'placeholder' : ''}" data-action="edit">${
       isEmpty ? '클릭하여 메모 입력...' : escapeHtml(text)
     }</div>
-    <div class="note-footer">
-      <span><span class="author-mark">●</span>EDIT · ${escapeHtml(note.lastEditedBy || note.createdBy || '익명')}</span>
+    <div class="note-foot">
+      <span>${escapeHtml(note.lastEditedBy || note.createdBy || '익명')}</span>
       <span>${formatTime(note.lastEditedAt)}</span>
     </div>
   `;
@@ -128,13 +171,24 @@ function createNoteEl(note) {
 }
 
 function attachNoteHandlers(el, note) {
-  el.querySelector('.delete-btn').addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (confirm(`이 ${CATEGORY_LABELS[note.category]?.ko || '메모'} 카드를 삭제할까요?`)) {
-      notes = notes.filter(n => n.id !== note.id);
-      renderBoard();
-      socket.emit('delete_note', note.id);
-    }
+  // Action buttons
+  el.querySelectorAll('[data-action]').forEach(btn => {
+    if (btn.classList.contains('note-body')) return;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const action = btn.dataset.action;
+      if (action === 'delete') {
+        if (confirm(`이 메모를 삭제할까요?`)) {
+          notes = notes.filter(n => n.id !== note.id);
+          renderBoard();
+          socket.emit('delete_note', note.id);
+        }
+      } else if (action === 'confirm') {
+        toggleFlag(note, 'confirmed');
+      } else if (action === 'cg') {
+        toggleFlag(note, 'isCG');
+      }
+    });
   });
 
   const body = el.querySelector('.note-body');
@@ -152,6 +206,19 @@ function attachNoteHandlers(el, note) {
   });
 }
 
+function toggleFlag(note, key) {
+  const updated = {
+    ...note,
+    [key]: !note[key],
+    lastEditedBy: userName,
+    lastEditedAt: new Date().toISOString(),
+  };
+  const idx = notes.findIndex(n => n.id === note.id);
+  if (idx !== -1) notes[idx] = updated;
+  socket.emit('update_note', updated);
+  renderBoard();
+}
+
 // ============================================================
 // Edit
 // ============================================================
@@ -162,7 +229,6 @@ function startEdit(el, body, note) {
   body.textContent = note.text || '';
   body.focus();
 
-  // place cursor at end
   const range = document.createRange();
   range.selectNodeContents(body);
   range.collapse(false);
@@ -280,13 +346,21 @@ function showCategoryModal() {
 }
 
 function addNote(category) {
+  // 필터 'all'이 아니면 전체 보기로 전환 (방금 만든 메모가 안 보이는 혼란 방지)
+  if (activeFilter !== 'all') {
+    activeFilter = 'all';
+    document.querySelectorAll('.filter-pill').forEach(p => p.classList.toggle('active', p.dataset.filter === 'all'));
+  }
+
   const boardRect = board.getBoundingClientRect();
   const note = {
     id: 'n_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
-    x: Math.max(40, Math.random() * (boardRect.width - 320) + 20),
-    y: Math.max(40, Math.random() * (boardRect.height - 280) + 20),
+    x: Math.max(40, Math.random() * Math.max(100, boardRect.width - 320) + 20),
+    y: Math.max(40, Math.random() * Math.max(100, boardRect.height - 280) + 20),
     text: '',
     category,
+    confirmed: false,
+    isCG: false,
     createdBy: userName,
     createdAt: new Date().toISOString(),
     lastEditedBy: userName,
@@ -296,7 +370,6 @@ function addNote(category) {
   socket.emit('add_note', note);
   renderBoard();
 
-  // auto-focus
   setTimeout(() => {
     const newEl = board.querySelector(`[data-id="${note.id}"]`);
     if (newEl) {
@@ -368,7 +441,6 @@ function setTicker(msg) {
   }, 6000);
 }
 
-// 1분마다 시간 표시 갱신
 setInterval(() => {
   if (!editingId && !draggingId) renderBoard();
 }, 60000);
