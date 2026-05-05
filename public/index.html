@@ -3,24 +3,20 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>머니플러스 보드 · Money Plus Board</title>
+  <title>4자토크 연구실 · Money Plus</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.min.css">
-  <link href="https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <!-- ===== Header ===== -->
   <header class="header">
     <div class="logo">
       <div class="logo-stack">
-        <div class="logo-row">
-          <span class="logo-mark">머니플러스</span><span class="logo-plus">+</span>
-        </div>
+        <div class="logo-mark">4자토크 연구실</div>
         <div class="logo-en">MONEY PLUS · BOARD</div>
       </div>
-      <span class="subtitle">방송팀 협업 메모</span>
     </div>
 
     <div class="header-actions">
@@ -36,29 +32,36 @@
     </div>
   </header>
 
-  <!-- ===== Board canvas ===== -->
+  <nav id="filter-bar" class="filter-bar">
+    <button class="filter-pill active" data-filter="all">
+      전체 <span class="count" id="count-all">0</span>
+    </button>
+    <button class="filter-pill" data-filter="confirmed">
+      <span class="icon">✓</span> 확정 <span class="count" id="count-confirmed">0</span>
+    </button>
+    <button class="filter-pill" data-filter="cg">
+      <span class="icon">●</span> CG <span class="count" id="count-cg">0</span>
+    </button>
+  </nav>
+
   <main id="board" class="board"></main>
 
-  <!-- ===== Lower-third (LIVE bar) ===== -->
   <footer class="lower-third">
     <span class="live-indicator">LIVE</span>
     <span class="ticker" id="ticker">실시간 협업 보드 · 메모를 추가하면 다른 접속자에게 즉시 반영됩니다</span>
     <span class="status-meta">
-      <span class="status-label">접속</span>
+      <span>접속</span>
       <span id="connected-count" class="connected-count">1</span>
-      <span class="status-label">명</span>
+      <span>명</span>
     </span>
   </footer>
 
-  <!-- ===== Name Modal ===== -->
+  <!-- Name Modal -->
   <div id="name-modal" class="modal-backdrop hidden">
     <div class="modal" onclick="event.stopPropagation()">
-      <div class="modal-header">
-        <span class="modal-tag">ON AIR</span>
-        머니플러스 보드 입장
-      </div>
+      <div class="modal-header">4자토크 연구실 입장</div>
+      <p class="modal-desc">메모에 표시될 이름을 알려주세요</p>
       <div class="modal-body">
-        <p class="modal-desc">메모에 표시될 이름을 알려주세요</p>
         <input id="name-input" type="text" class="modal-input" placeholder="예) 예니" maxlength="20" autocomplete="off">
         <div class="modal-actions">
           <button id="name-save" class="btn-primary">입장하기</button>
@@ -67,36 +70,47 @@
     </div>
   </div>
 
-  <!-- ===== Category Modal ===== -->
+  <!-- Category Modal -->
   <div id="category-modal" class="modal-backdrop hidden">
     <div class="modal" onclick="event.stopPropagation()">
       <div class="modal-header">메모 종류 선택</div>
+      <p class="modal-desc">먼저 카테고리를 고르고, 작성한 뒤 ✓확정 / ●CG 표시를 추가할 수 있어요</p>
       <div class="modal-body">
         <div class="category-picker">
-          <button class="category-option" data-category="market">
-            <span class="cat-bar" style="background:#08163a;"></span>
-            <span class="cat-label">시황</span>
-            <span class="cat-en">MARKET</span>
+          <button class="category-option" data-category="index">
+            <span class="cat-bar" style="background:#5290cf;"></span>
+            <span>지수</span>
+            <span class="cat-en">INDEX</span>
+          </button>
+          <button class="category-option" data-category="sector">
+            <span class="cat-bar" style="background:#5fa885;"></span>
+            <span>섹터</span>
+            <span class="cat-en">SECTOR</span>
           </button>
           <button class="category-option" data-category="stocks">
-            <span class="cat-bar" style="background:#d85050;"></span>
-            <span class="cat-label">종목</span>
+            <span class="cat-bar" style="background:#d27a5a;"></span>
+            <span>종목</span>
             <span class="cat-en">STOCKS</span>
           </button>
-          <button class="category-option" data-category="schedule">
-            <span class="cat-bar" style="background:#b88a00;"></span>
-            <span class="cat-label">일정</span>
-            <span class="cat-en">SCHEDULE</span>
+          <button class="category-option" data-category="supply">
+            <span class="cat-bar" style="background:#8e74bb;"></span>
+            <span>수급</span>
+            <span class="cat-en">SUPPLY</span>
           </button>
-          <button class="category-option" data-category="alert">
-            <span class="cat-bar" style="background:#c41e1e;"></span>
-            <span class="cat-label">이슈</span>
-            <span class="cat-en">ALERT</span>
+          <button class="category-option" data-category="us">
+            <span class="cat-bar" style="background:#3a5a82;"></span>
+            <span>미증시</span>
+            <span class="cat-en">US</span>
           </button>
-          <button class="category-option" data-category="memo">
-            <span class="cat-bar" style="background:#4a5568;"></span>
-            <span class="cat-label">메모</span>
-            <span class="cat-en">MEMO</span>
+          <button class="category-option" data-category="news">
+            <span class="cat-bar" style="background:#b89e44;"></span>
+            <span>뉴스</span>
+            <span class="cat-en">NEWS</span>
+          </button>
+          <button class="category-option full-width" data-category="caster">
+            <span class="cat-bar" style="background:#b66890;"></span>
+            <span>캐스터 브리핑</span>
+            <span class="cat-en">CASTER</span>
           </button>
         </div>
       </div>
