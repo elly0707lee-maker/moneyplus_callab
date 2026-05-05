@@ -18,15 +18,18 @@ const DATA_FILE = path.join(DATA_DIR, 'notes.json');
 // ===== Storage =====
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(DATA_FILE)) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify({ notes: [] }, null, 2));
+  fs.writeFileSync(DATA_FILE, JSON.stringify({ notes: [], meta: {} }, null, 2));
 }
 
 const readData = () => {
   try {
-    return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    if (!Array.isArray(data.notes)) data.notes = [];
+    if (!data.meta || typeof data.meta !== 'object') data.meta = {};
+    return data;
   } catch (e) {
     console.error('Failed to read data:', e);
-    return { notes: [] };
+    return { notes: [], meta: {} };
   }
 };
 
@@ -83,6 +86,22 @@ io.on('connection', (socket) => {
     data.notes = data.notes.filter(n => n.id !== id);
     writeData(data);
     io.emit('note_deleted', id);
+  });
+
+  socket.on('set_meta', (meta) => {
+    if (!meta || typeof meta !== 'object') return;
+    const data = readData();
+    data.meta = { ...data.meta, ...meta };
+    writeData(data);
+    io.emit('meta_updated', data.meta);
+  });
+
+  socket.on('reset_all', () => {
+    const data = readData();
+    data.notes = [];
+    writeData(data);
+    io.emit('state', data);
+    io.emit('reset_done');
   });
 
   socket.on('cursor_move', (payload) => {
