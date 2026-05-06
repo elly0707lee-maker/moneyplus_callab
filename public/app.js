@@ -5,12 +5,14 @@ let notes = [];
 let meta = {};
 let editingId = null;
 let draggingId = null;
-let dragOffset = { x: 0, y: 0 };
 let activeFilter = 'all';
 let cgInputState = null; // { noteId, value }
+let commentInputState = null; // { noteId, value }
+let expandedHistory = new Set(); // note IDs whose history panel is open
 
 const board = document.getElementById('board');
 const userNameEl = document.getElementById('user-name');
+const userPillEl = document.getElementById('user-pill');
 const connectedCountEl = document.getElementById('connected-count');
 const tickerEl = document.getElementById('ticker');
 const dateDisplayEl = document.getElementById('date-display');
@@ -20,16 +22,35 @@ const CATEGORY_LABELS = {
   index:   { ko: '지수',          en: 'INDEX',    color: '#5290cf' },
   sector:  { ko: '섹터',          en: 'SECTOR',   color: '#5fa885' },
   stocks:  { ko: '종목',          en: 'STOCKS',   color: '#d27a5a' },
-  supply:  { ko: '수급',          en: 'SUPPLY',   color: '#8e74bb' },
+  supply:  { ko: '수급',          en: 'LIQUIDITY', color: '#8e74bb' },
   us:      { ko: '미증시',        en: 'US',       color: '#3a5a82' },
   news:    { ko: '뉴스',          en: 'NEWS',     color: '#b89e44' },
   caster:  { ko: '캐스터 브리핑', en: 'CASTER',   color: '#b66890' },
 };
 
 const KOREAN_DAYS = ['일', '월', '화', '수', '목', '금', '토'];
+const DRAG_THRESHOLD = 5; // px movement before considered a drag
 
 function getCat(key) {
   return CATEGORY_LABELS[key] || { ko: '기타', en: 'OTHER', color: '#8a96a8' };
+}
+
+function makeHistoryEntry(action, summary) {
+  return {
+    id: 'h_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+    action,
+    summary,
+    by: userName,
+    at: new Date().toISOString(),
+  };
+}
+
+// Push history while keeping the array bounded (avoid unbounded growth)
+function appendHistory(note, entry) {
+  const prev = Array.isArray(note.history) ? note.history : [];
+  const next = [...prev, entry];
+  // keep most recent 30
+  return next.length > 30 ? next.slice(next.length - 30) : next;
 }
 
 // ============================================================
@@ -114,8 +135,10 @@ function renderMeta() {
 }
 
 document.getElementById('btn-date').addEventListener('click', () => {
-  if (dateInputEl.showPicker) dateInputEl.showPicker();
-  else dateInputEl.click();
+  if (typeof dateInputEl.showPicker === 'function') {
+    try { dateInputEl.showPicker(); return; } catch (e) {}
+  }
+  dateInputEl.click();
 });
 
 dateInputEl.addEventListener('change', (e) => {
@@ -193,7 +216,11 @@ function createNoteEl(note) {
   const text = note.text || '';
   const isEmpty = !text.trim();
   const cgIdeas = note.cgIdeas || [];
+  const comments = note.comments || [];
+  const history = note.history || [];
   const isCgInputOpen = cgInputState && cgInputState.noteId === note.id;
+  const isComInputOpen = commentInputState && commentInputState.noteId === note.id;
+  const isHistoryOpen = expandedHistory.has(note.id);
 
   el.innerHTML = `
     <div class="note-head">
@@ -208,14 +235,24 @@ function createNoteEl(note) {
         <button class="note-action-btn is-delete" data-action="delete" title="삭제">×</button>
       </div>
     </div>
-    <div class="note-body ${isEmpty ? 'placeholder' : ''}" data-action="edit">${
-      isEmpty ? '클릭하여 메모 입력...' : escapeHtml(text)
+    <div class="note-body ${isEmpty ? 'placeholder' : ''}" data-role="body">${
+      isEmpty ? '터치하여 메모 입력...' : escapeHtml(text)
     }</div>
     ${renderCGSection(note, cgIdeas, isCgInputOpen)}
+    ${renderCommentsSection(note, comments, isComInputOpen)}
     <div class="note-foot">
-      <span>${escapeHtml(note.lastEditedBy || note.createdBy || '익명')}</span>
-      <span>${formatTime(note.lastEditedAt)}</span>
+      <span class="foot-left">
+        <span>${escapeHtml(note.lastEditedBy || note.createdBy || '익명')}</span>
+        <span>·</span>
+        <span>${formatTime(note.lastEditedAt)}</span>
+      </span>
+      ${history.length > 0 ? `
+        <button class="history-toggle ${isHistoryOpen ? 'expanded' : ''}" data-action="toggle-history">
+          수정 ${history.length}<span class="chevron">▾</span>
+        </button>
+      ` : ''}
     </div>
+    ${isHistoryOpen ? renderHistoryPanel(history) : ''}
   `;
 
   attachNoteHandlers(el, note);
@@ -223,12 +260,10 @@ function createNoteEl(note) {
 }
 
 function renderCGSection(note, cgIdeas, isInputOpen) {
-  // No CG ideas and no open input → show subtle "+ CG 아이디어" button
   if (cgIdeas.length === 0 && !isInputOpen) {
     return `<button class="cg-add-btn-empty" data-cg-action="open-input" data-note-id="${note.id}">+ CG 아이디어 추가</button>`;
   }
 
-  // Has CG ideas or input is open → show full section
   const itemsHtml = cgIdeas.map(idea => `
     <div class="note-cg-item" data-idea-id="${idea.id}">
       <span class="bullet">•</span>
@@ -257,9 +292,64 @@ function renderCGSection(note, cgIdeas, isInputOpen) {
   `;
 }
 
+function renderCommentsSection(note, comments, isInputOpen) {
+  if (comments.length === 0 && !isInputOpen) {
+    return `<button class="com-add-btn-empty" data-com-action="open-input" data-note-id="${note.id}">+ 코멘트 추가</button>`;
+  }
+
+  const itemsHtml = comments.map(c => `
+    <div class="note-comment-item" data-comment-id="${c.id}">
+      <span class="author">${escapeHtml(c.createdBy || '익명')}</span>
+      <span class="body">${escapeHtml(c.text)}<span class="when">${formatTime(c.createdAt)}</span></span>
+      <button class="remove" data-com-action="remove" data-note-id="${note.id}" data-comment-id="${c.id}">×</button>
+    </div>
+  `).join('');
+
+  const inputHtml = isInputOpen ? `
+    <div class="com-input-row">
+      <input type="text" class="com-input" placeholder="코멘트 입력 후 Enter..." maxlength="200">
+    </div>
+  ` : `
+    <button class="com-add-link" data-com-action="open-input" data-note-id="${note.id}">+ 코멘트 더 추가</button>
+  `;
+
+  return `
+    <div class="note-comments-section">
+      <div class="note-comments-header">
+        <span class="com-dot"></span>
+        <span>COMMENTS</span>
+      </div>
+      <div class="note-comments-list">${itemsHtml}</div>
+      ${inputHtml}
+    </div>
+  `;
+}
+
+function renderHistoryPanel(history) {
+  // Show most recent first
+  const reversed = [...history].reverse();
+  const itemsHtml = reversed.map(h => `
+    <div class="history-item">
+      <span class="when">${formatTime(h.at)}</span>
+      <span class="who">${escapeHtml(h.by || '익명')}</span>
+      <span class="what">${escapeHtml(h.summary || h.action || '')}</span>
+    </div>
+  `).join('');
+
+  return `
+    <div class="note-history-panel">
+      <div class="note-history-header">수정 기록</div>
+      <div class="note-history-list">${itemsHtml}</div>
+    </div>
+  `;
+}
+
+// ============================================================
+// Note interaction handlers
+// ============================================================
 function attachNoteHandlers(el, note) {
-  // Header action buttons (confirm, delete)
-  el.querySelectorAll('.note-head [data-action]').forEach(btn => {
+  // Header buttons (confirm, delete) and footer history toggle
+  el.querySelectorAll('[data-action]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const action = btn.dataset.action;
@@ -271,6 +361,8 @@ function attachNoteHandlers(el, note) {
         }
       } else if (action === 'confirm') {
         toggleFlag(note, 'confirmed');
+      } else if (action === 'toggle-history') {
+        toggleHistory(note.id);
       }
     });
   });
@@ -280,65 +372,140 @@ function attachNoteHandlers(el, note) {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const cgAction = btn.dataset.cgAction;
-      if (cgAction === 'open-input') {
-        startCGInput(note.id);
-      } else if (cgAction === 'remove') {
-        removeCGIdea(note.id, btn.dataset.ideaId);
-      }
+      if (cgAction === 'open-input') startCGInput(note.id);
+      else if (cgAction === 'remove') removeCGIdea(note.id, btn.dataset.ideaId);
     });
   });
 
-  // CG input event handlers
+  // Comment actions
+  el.querySelectorAll('[data-com-action]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const comAction = btn.dataset.comAction;
+      if (comAction === 'open-input') startCommentInput(note.id);
+      else if (comAction === 'remove') removeComment(note.id, btn.dataset.commentId);
+    });
+  });
+
+  // CG input wiring
   const cgInput = el.querySelector('.cg-input');
   if (cgInput && cgInputState && cgInputState.noteId === note.id) {
     cgInput.value = cgInputState.value || '';
-    setTimeout(() => cgInput.focus(), 0);
-    cgInput.addEventListener('input', (e) => {
-      cgInputState.value = e.target.value;
-    });
+    setTimeout(() => cgInput.focus(), 30);
+    cgInput.addEventListener('input', (e) => { cgInputState.value = e.target.value; });
     cgInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        endCGInput(true);
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        endCGInput(false);
-      }
+      if (e.key === 'Enter') { e.preventDefault(); endCGInput(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); endCGInput(false); }
     });
     cgInput.addEventListener('blur', () => {
-      // Slight delay to allow other clicks to fire first
       setTimeout(() => {
         if (cgInputState && cgInputState.noteId === note.id) endCGInput(true);
       }, 150);
     });
-    // Prevent drag/edit from input
-    cgInput.addEventListener('mousedown', (e) => e.stopPropagation());
+    cgInput.addEventListener('pointerdown', (e) => e.stopPropagation());
   }
 
-  // Body click → edit
-  const body = el.querySelector('.note-body');
-  body.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (draggingId) return;
-    startEdit(el, body, note);
-  });
+  // Comment input wiring
+  const comInput = el.querySelector('.com-input');
+  if (comInput && commentInputState && commentInputState.noteId === note.id) {
+    comInput.value = commentInputState.value || '';
+    setTimeout(() => comInput.focus(), 30);
+    comInput.addEventListener('input', (e) => { commentInputState.value = e.target.value; });
+    comInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); endCommentInput(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); endCommentInput(false); }
+    });
+    comInput.addEventListener('blur', () => {
+      setTimeout(() => {
+        if (commentInputState && commentInputState.noteId === note.id) endCommentInput(true);
+      }, 150);
+    });
+    comInput.addEventListener('pointerdown', (e) => e.stopPropagation());
+  }
 
-  // Drag (only from non-interactive areas)
-  el.addEventListener('mousedown', (e) => {
+  // ===== Unified pointer interaction (drag + tap-to-edit) =====
+  const body = el.querySelector('[data-role="body"]');
+
+  el.addEventListener('pointerdown', (e) => {
+    // Skip if interacting with buttons / inputs / contenteditable / cg / comments / history
     if (e.target.tagName === 'BUTTON') return;
     if (e.target.tagName === 'INPUT') return;
     if (e.target.closest('[contenteditable="true"]')) return;
     if (e.target.closest('.note-cg-section')) return;
     if (e.target.closest('.cg-add-btn-empty')) return;
+    if (e.target.closest('.note-comments-section')) return;
+    if (e.target.closest('.com-add-btn-empty')) return;
+    if (e.target.closest('.note-history-panel')) return;
+    if (e.target.closest('.history-toggle')) return;
     if (editingId === note.id) return;
-    startDrag(el, note, e);
+
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const isOnBody = body && (e.target === body || body.contains(e.target));
+
+    const elRect = el.getBoundingClientRect();
+    const offset = { x: startX - elRect.left, y: startY - elRect.top };
+    let moved = false;
+
+    try { el.setPointerCapture(e.pointerId); } catch (err) {}
+
+    const boardRect = board.getBoundingClientRect();
+
+    const onMove = (ev) => {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (!moved && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+        moved = true;
+        draggingId = note.id;
+        el.classList.add('dragging');
+      }
+      if (moved) {
+        ev.preventDefault();
+        const x = Math.max(0, ev.clientX - boardRect.left - offset.x);
+        const y = Math.max(0, ev.clientY - boardRect.top - offset.y);
+        el.style.left = x + 'px';
+        el.style.top = y + 'px';
+      }
+    };
+
+    const onUp = (ev) => {
+      el.removeEventListener('pointermove', onMove);
+      el.removeEventListener('pointerup', onUp);
+      el.removeEventListener('pointercancel', onUp);
+      try { el.releasePointerCapture(e.pointerId); } catch (err) {}
+
+      if (moved) {
+        el.classList.remove('dragging');
+        const x = parseInt(el.style.left) || 0;
+        const y = parseInt(el.style.top) || 0;
+        draggingId = null;
+        if (x !== note.x || y !== note.y) {
+          // Position changes don't go into history (too noisy)
+          const updated = { ...note, x, y, lastEditedBy: userName, lastEditedAt: new Date().toISOString() };
+          const idx = notes.findIndex(n => n.id === note.id);
+          if (idx !== -1) notes[idx] = updated;
+          socket.emit('update_note', updated);
+        }
+      } else if (isOnBody && body) {
+        startEdit(el, body, note);
+      }
+    };
+
+    el.addEventListener('pointermove', onMove);
+    el.addEventListener('pointerup', onUp);
+    el.addEventListener('pointercancel', onUp);
   });
 }
 
 function toggleFlag(note, key) {
+  const wasOn = !!note[key];
+  const summary = key === 'confirmed' ? (wasOn ? '확정 해제' : '확정 표시') : `${key} 토글`;
   const updated = {
     ...note,
     [key]: !note[key],
+    history: appendHistory(note, makeHistoryEntry(key, summary)),
     lastEditedBy: userName,
     lastEditedAt: new Date().toISOString(),
   };
@@ -361,11 +528,8 @@ function endCGInput(commit) {
   const { noteId, value } = cgInputState;
   cgInputState = null;
   const trimmed = (value || '').trim();
-  if (commit && trimmed) {
-    addCGIdea(noteId, trimmed);
-  } else {
-    renderBoard();
-  }
+  if (commit && trimmed) addCGIdea(noteId, trimmed);
+  else renderBoard();
 }
 
 function addCGIdea(noteId, text) {
@@ -380,6 +544,7 @@ function addCGIdea(noteId, text) {
   const updated = {
     ...note,
     cgIdeas: [...(note.cgIdeas || []), newIdea],
+    history: appendHistory(note, makeHistoryEntry('cg_add', `CG 추가: "${text.length > 20 ? text.slice(0, 20) + '…' : text}"`)),
     lastEditedBy: userName,
     lastEditedAt: new Date().toISOString(),
   };
@@ -405,6 +570,66 @@ function removeCGIdea(noteId, ideaId) {
 }
 
 // ============================================================
+// Comments
+// ============================================================
+function startCommentInput(noteId) {
+  commentInputState = { noteId, value: '' };
+  renderBoard();
+}
+
+function endCommentInput(commit) {
+  if (!commentInputState) return;
+  const { noteId, value } = commentInputState;
+  commentInputState = null;
+  const trimmed = (value || '').trim();
+  if (commit && trimmed) addComment(noteId, trimmed);
+  else renderBoard();
+}
+
+function addComment(noteId, text) {
+  const note = notes.find(n => n.id === noteId);
+  if (!note) return;
+  const newComment = {
+    id: 'cm_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+    text,
+    createdBy: userName,
+    createdAt: new Date().toISOString(),
+  };
+  const updated = {
+    ...note,
+    comments: [...(note.comments || []), newComment],
+    history: appendHistory(note, makeHistoryEntry('comment_add', `코멘트: "${text.length > 20 ? text.slice(0, 20) + '…' : text}"`)),
+    lastEditedBy: userName,
+    lastEditedAt: new Date().toISOString(),
+  };
+  const idx = notes.findIndex(n => n.id === noteId);
+  if (idx !== -1) notes[idx] = updated;
+  socket.emit('update_note', updated);
+  renderBoard();
+}
+
+function removeComment(noteId, commentId) {
+  const note = notes.find(n => n.id === noteId);
+  if (!note) return;
+  const updated = {
+    ...note,
+    comments: (note.comments || []).filter(c => c.id !== commentId),
+    lastEditedBy: userName,
+    lastEditedAt: new Date().toISOString(),
+  };
+  const idx = notes.findIndex(n => n.id === noteId);
+  if (idx !== -1) notes[idx] = updated;
+  socket.emit('update_note', updated);
+  renderBoard();
+}
+
+function toggleHistory(noteId) {
+  if (expandedHistory.has(noteId)) expandedHistory.delete(noteId);
+  else expandedHistory.add(noteId);
+  renderBoard();
+}
+
+// ============================================================
 // Edit memo body
 // ============================================================
 function startEdit(el, body, note) {
@@ -414,12 +639,15 @@ function startEdit(el, body, note) {
   body.textContent = note.text || '';
   body.focus();
 
-  const range = document.createRange();
-  range.selectNodeContents(body);
-  range.collapse(false);
-  const sel = window.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(range);
+  // Place cursor at end
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(body);
+    range.collapse(false);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } catch (e) {}
 
   const finish = () => {
     body.contentEditable = 'false';
@@ -429,9 +657,11 @@ function startEdit(el, body, note) {
     editingId = null;
 
     if (newText !== (note.text || '').trim()) {
+      const entry = makeHistoryEntry('edit_text', '본문 수정');
       const updated = {
         ...note,
         text: newText,
+        history: appendHistory(note, entry),
         lastEditedBy: userName,
         lastEditedAt: new Date().toISOString(),
       };
@@ -456,43 +686,6 @@ function startEdit(el, body, note) {
 
   body.addEventListener('blur', finish);
   body.addEventListener('keydown', keyHandler);
-}
-
-// ============================================================
-// Drag
-// ============================================================
-function startDrag(el, note, e) {
-  draggingId = note.id;
-  const rect = el.getBoundingClientRect();
-  const boardRect = board.getBoundingClientRect();
-  dragOffset = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-  el.classList.add('dragging');
-
-  const move = (ev) => {
-    const x = ev.clientX - boardRect.left - dragOffset.x;
-    const y = ev.clientY - boardRect.top - dragOffset.y;
-    el.style.left = Math.max(0, x) + 'px';
-    el.style.top = Math.max(0, y) + 'px';
-  };
-
-  const up = () => {
-    el.classList.remove('dragging');
-    document.removeEventListener('mousemove', move);
-    document.removeEventListener('mouseup', up);
-    const x = parseInt(el.style.left) || 0;
-    const y = parseInt(el.style.top) || 0;
-    const id = note.id;
-    draggingId = null;
-    if (x !== note.x || y !== note.y) {
-      const updated = { ...note, x, y, lastEditedBy: userName, lastEditedAt: new Date().toISOString() };
-      const idx = notes.findIndex(n => n.id === id);
-      if (idx !== -1) notes[idx] = updated;
-      socket.emit('update_note', updated);
-    }
-  };
-
-  document.addEventListener('mousemove', move);
-  document.addEventListener('mouseup', up);
 }
 
 // ============================================================
@@ -522,14 +715,17 @@ function addNote(category) {
     document.querySelectorAll('.filter-pill').forEach(p => p.classList.toggle('active', p.dataset.filter === 'all'));
   }
   const boardRect = board.getBoundingClientRect();
+  const noteWidth = window.innerWidth <= 380 ? 220 : (window.innerWidth <= 768 ? 240 : 270);
   const note = {
     id: 'n_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
-    x: Math.max(40, Math.random() * Math.max(100, boardRect.width - 320) + 20),
-    y: Math.max(40, Math.random() * Math.max(100, boardRect.height - 280) + 20),
+    x: Math.max(20, Math.random() * Math.max(60, boardRect.width - noteWidth - 40) + 20),
+    y: Math.max(20, Math.random() * Math.max(60, boardRect.height * 0.5) + 20),
     text: '',
     category,
     confirmed: false,
     cgIdeas: [],
+    comments: [],
+    history: [makeHistoryEntry('create', '메모 생성')],
     createdBy: userName,
     createdAt: new Date().toISOString(),
     lastEditedBy: userName,
@@ -541,10 +737,10 @@ function addNote(category) {
   setTimeout(() => {
     const newEl = board.querySelector(`[data-id="${note.id}"]`);
     if (newEl) {
-      const body = newEl.querySelector('.note-body');
+      const body = newEl.querySelector('[data-role="body"]');
       startEdit(newEl, body, note);
     }
-  }, 60);
+  }, 80);
 }
 
 // ============================================================
@@ -556,7 +752,7 @@ function showNameModal() {
   const saveBtn = document.getElementById('name-save');
   modal.classList.remove('hidden');
   input.value = userName || '';
-  setTimeout(() => input.focus(), 50);
+  setTimeout(() => input.focus(), 100);
 
   const save = () => {
     const v = input.value.trim();
@@ -575,7 +771,16 @@ function showNameModal() {
   modal.onclick = (e) => { if (e.target === modal && userName) modal.classList.add('hidden'); };
 }
 
-document.getElementById('btn-change-name').addEventListener('click', showNameModal);
+document.getElementById('btn-change-name').addEventListener('click', (e) => {
+  e.stopPropagation();
+  showNameModal();
+});
+
+// On mobile, tapping the user pill itself opens the rename modal (since the '변경' link is hidden)
+userPillEl.addEventListener('click', (e) => {
+  if (e.target.id === 'btn-change-name') return; // already handled
+  if (window.matchMedia('(max-width: 768px)').matches) showNameModal();
+});
 
 // ============================================================
 // Kebab menu + Reset
@@ -641,7 +846,7 @@ function setTicker(msg) {
 }
 
 setInterval(() => {
-  if (!editingId && !draggingId && !cgInputState) renderBoard();
+  if (!editingId && !draggingId && !cgInputState && !commentInputState) renderBoard();
 }, 60000);
 
 init();
