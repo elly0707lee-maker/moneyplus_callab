@@ -215,7 +215,29 @@ function renderBoard() {
   for (const note of visible) {
     board.appendChild(createNoteEl(note));
   }
+  recomputeBoardSize();
 }
+
+// Grow board vertically to fit the lowest note + buffer.
+// Called after render, after drag, and on window resize.
+function recomputeBoardSize() {
+  const visible = getVisibleNotes();
+  let maxBottom = 0;
+  for (const note of visible) {
+    const noteEl = board.querySelector(`[data-id="${note.id}"]`);
+    const h = noteEl ? noteEl.offsetHeight : 200;
+    const bottom = (note.y || 0) + h;
+    if (bottom > maxBottom) maxBottom = bottom;
+  }
+  const buffer = 500;
+  const defaultMin = Math.max(600, window.innerHeight - 180);
+  const finalMin = Math.max(defaultMin, maxBottom + buffer);
+  board.style.minHeight = finalMin + 'px';
+}
+
+window.addEventListener('resize', () => {
+  recomputeBoardSize();
+});
 
 function createNoteEl(note) {
   const el = document.createElement('div');
@@ -481,6 +503,13 @@ function attachNoteHandlers(el, note) {
         const y = Math.max(0, ev.clientY - boardRect.top - offset.y);
         el.style.left = x + 'px';
         el.style.top = y + 'px';
+
+        // Grow board live if dragging near or past current bottom
+        const noteH = el.offsetHeight;
+        const needed = y + noteH + 200;
+        if (needed > board.offsetHeight) {
+          board.style.minHeight = (y + noteH + 600) + 'px';
+        }
       }
     };
 
@@ -730,10 +759,18 @@ function addNote(category) {
   }
   const boardRect = board.getBoundingClientRect();
   const noteWidth = window.innerWidth <= 380 ? 220 : (window.innerWidth <= 768 ? 240 : 270);
+
+  // Place new note inside the currently-visible viewport, accounting for scroll.
+  // boardRect.top is negative if user scrolled past board start.
+  const desiredViewportY = 130 + Math.random() * Math.max(80, window.innerHeight - 380);
+  const yInBoard = Math.max(20, desiredViewportY - boardRect.top);
+  const xMax = Math.max(60, window.innerWidth - noteWidth - 60);
+  const xInBoard = Math.max(20, Math.random() * xMax + 20);
+
   const note = {
     id: 'n_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
-    x: Math.max(20, Math.random() * Math.max(60, boardRect.width - noteWidth - 40) + 20),
-    y: Math.max(20, Math.random() * Math.max(60, boardRect.height * 0.5) + 20),
+    x: xInBoard,
+    y: yInBoard,
     text: '',
     category,
     confirmed: false,
