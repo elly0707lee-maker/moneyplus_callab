@@ -83,10 +83,24 @@ socket.on('note_added', (note) => {
 socket.on('note_updated', (note) => {
   const idx = notes.findIndex(n => n.id === note.id);
   if (idx === -1) return;
+  const prev = notes[idx];
   notes[idx] = note;
   if (editingId === note.id || draggingId === note.id) return;
+
+  // Detect drag-only update (position changed, nothing else)
+  const isDragOnly =
+    prev &&
+    (prev.x !== note.x || prev.y !== note.y) &&
+    prev.text === note.text &&
+    prev.confirmed === note.confirmed &&
+    JSON.stringify(prev.cgIdeas || []) === JSON.stringify(note.cgIdeas || []) &&
+    JSON.stringify(prev.comments || []) === JSON.stringify(note.comments || []) &&
+    (prev.history || []).length === (note.history || []).length;
+
   renderBoard();
-  setTicker(`${note.lastEditedBy}님이 메모를 수정했습니다`);
+  if (!isDragOnly) {
+    setTicker(`${note.lastEditedBy}님이 메모를 수정했습니다`);
+  }
 });
 
 socket.on('note_deleted', (id) => {
@@ -242,9 +256,9 @@ function createNoteEl(note) {
     ${renderCommentsSection(note, comments, isComInputOpen)}
     <div class="note-foot">
       <span class="foot-left">
-        <span>${escapeHtml(note.lastEditedBy || note.createdBy || '익명')}</span>
+        <span>${escapeHtml(note.createdBy || '익명')}</span>
         <span>·</span>
-        <span>${formatTime(note.lastEditedAt)}</span>
+        <span>${formatTime(note.createdAt)}</span>
       </span>
       ${history.length > 0 ? `
         <button class="history-toggle ${isHistoryOpen ? 'expanded' : ''}" data-action="toggle-history">
@@ -482,8 +496,8 @@ function attachNoteHandlers(el, note) {
         const y = parseInt(el.style.top) || 0;
         draggingId = null;
         if (x !== note.x || y !== note.y) {
-          // Position changes don't go into history (too noisy)
-          const updated = { ...note, x, y, lastEditedBy: userName, lastEditedAt: new Date().toISOString() };
+          // Drag = position only. NEVER touch createdBy / lastEditedBy / history.
+          const updated = { ...note, x, y };
           const idx = notes.findIndex(n => n.id === note.id);
           if (idx !== -1) notes[idx] = updated;
           socket.emit('update_note', updated);
