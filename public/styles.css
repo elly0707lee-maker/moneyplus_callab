@@ -391,9 +391,15 @@ body {
   position: relative;
   left: auto !important;
   top: auto !important;
-  width: 100%;
+  width: auto;
   cursor: default;
   touch-action: auto; /* allow normal scroll over cards */
+  align-self: stretch;
+}
+
+.board.is-sequence .note[data-depth] {
+  border-left-width: 2px;
+  background: linear-gradient(180deg, #f8fbfd 0%, #ffffff 30%);
 }
 
 .board.is-sequence .note .note-action-btn.move-up,
