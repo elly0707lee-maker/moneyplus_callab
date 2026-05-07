@@ -54,84 +54,116 @@ function appendHistory(note, entry) {
 }
 
 // ============================================================
-// Question Order helpers
+// Question Order helpers (supports hierarchical strings like "2-1")
 // ============================================================
-function maxConfirmedOrder(excludeId) {
+
+// "2-1-3" → [2, 1, 3]
+function parseOrder(o) {
+  if (o == null) return [];
+  return String(o).split('-').map(s => parseInt(s, 10) || 0);
+}
+
+// Sort comparator: "2" < "2-1" < "2-2" < "3" < "10"
+function compareOrders(a, b) {
+  const pa = parseOrder(a);
+  const pb = parseOrder(b);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const va = i < pa.length ? pa[i] : -1;
+    const vb = i < pb.length ? pb[i] : -1;
+    if (va !== vb) return va - vb;
+  }
+  return 0;
+}
+
+function isValidOrderString(s) {
+  return typeof s === 'string' && /^\d+(-\d+)*$/.test(s.trim());
+}
+
+function maxTopLevelOrder() {
   let max = 0;
   for (const n of notes) {
-    if (excludeId && n.id === excludeId) continue;
-    if (n.confirmed && n.questionOrder) {
-      if (n.questionOrder > max) max = n.questionOrder;
-    }
+    if (!n.confirmed || n.questionOrder == null) continue;
+    const top = parseOrder(n.questionOrder)[0] || 0;
+    if (top > max) max = top;
   }
   return max;
 }
 
-// Ensure all confirmed notes have a questionOrder. Assigns missing ones in array order.
+// Confirmed notes in display order
+function getSortedConfirmed() {
+  return notes
+    .filter(n => n.confirmed && n.questionOrder != null)
+    .sort((a, b) => compareOrders(a.questionOrder, b.questionOrder));
+}
+
+// Ensure all confirmed notes have a questionOrder. Assigns missing ones at top-level.
 function ensureOrders() {
   const confirmed = notes.filter(n => n.confirmed);
   const withoutOrder = confirmed.filter(n => !n.questionOrder);
   if (withoutOrder.length === 0) return;
 
-  let next = maxConfirmedOrder() + 1;
+  let next = maxTopLevelOrder() + 1;
   for (const n of withoutOrder) {
-    const updated = { ...n, questionOrder: next++ };
+    const updated = { ...n, questionOrder: String(next++) };
     const idx = notes.findIndex(x => x.id === n.id);
     if (idx !== -1) notes[idx] = updated;
     socket.emit('update_note', updated);
   }
 }
 
-// Set a confirmed note to a specific order, shifting others as needed.
-function setQuestionOrder(noteId, newOrder) {
-  const note = notes.find(n => n.id === noteId);
-  if (!note || !note.confirmed) return;
-
-  const max = maxConfirmedOrder();
-  newOrder = Math.max(1, Math.min(max, newOrder));
-  const oldOrder = note.questionOrder || max + 1;
-  if (newOrder === oldOrder) return;
-
-  const updates = [];
-  for (const n of notes) {
-    if (n.id === note.id) continue;
-    if (!n.confirmed || !n.questionOrder) continue;
-
-    let newOrd = n.questionOrder;
-    if (newOrder > oldOrder && n.questionOrder > oldOrder && n.questionOrder <= newOrder) {
-      newOrd = n.questionOrder - 1;
-    } else if (newOrder < oldOrder && n.questionOrder >= newOrder && n.questionOrder < oldOrder) {
-      newOrd = n.questionOrder + 1;
-    }
-    if (newOrd !== n.questionOrder) {
-      const updated = { ...n, questionOrder: newOrd };
-      const idx = notes.findIndex(x => x.id === n.id);
-      if (idx !== -1) notes[idx] = updated;
-      updates.push(updated);
-    }
-  }
-
-  const updatedSelf = { ...note, questionOrder: newOrder };
-  const selfIdx = notes.findIndex(x => x.id === note.id);
-  if (selfIdx !== -1) notes[selfIdx] = updatedSelf;
-  updates.push(updatedSelf);
-
-  for (const u of updates) socket.emit('update_note', u);
+// Swap order strings between two notes
+function swapOrders(a, b) {
+  const aOrder = a.questionOrder;
+  const bOrder = b.questionOrder;
+  const updatedA = { ...a, questionOrder: bOrder };
+  const updatedB = { ...b, questionOrder: aOrder };
+  const idxA = notes.findIndex(n => n.id === a.id);
+  const idxB = notes.findIndex(n => n.id === b.id);
+  if (idxA !== -1) notes[idxA] = updatedA;
+  if (idxB !== -1) notes[idxB] = updatedB;
+  socket.emit('update_note', updatedA);
+  socket.emit('update_note', updatedB);
   renderBoard();
 }
 
-function moveOrderUp(noteId) {
+// Set the order of a note. If another confirmed note already has this order, swap them.
+function setQuestionOrder(noteId, newOrder) {
   const note = notes.find(n => n.id === noteId);
-  if (!note || !note.questionOrder || note.questionOrder <= 1) return;
-  setQuestionOrder(noteId, note.questionOrder - 1);
+  if (!note || !note.confirmed) return;
+  newOrder = String(newOrder).trim();
+  if (!isValidOrderString(newOrder)) return;
+  if (compareOrders(newOrder, note.questionOrder) === 0) return;
+
+  const conflict = notes.find(n =>
+    n.confirmed && n.id !== noteId && n.questionOrder != null &&
+    compareOrders(n.questionOrder, newOrder) === 0
+  );
+
+  if (conflict) {
+    swapOrders(note, conflict);
+    return;
+  }
+
+  const updated = { ...note, questionOrder: newOrder };
+  const idx = notes.findIndex(x => x.id === note.id);
+  if (idx !== -1) notes[idx] = updated;
+  socket.emit('update_note', updated);
+  renderBoard();
+}
+
+// Up/down: swap with adjacent in sorted order (works across levels)
+function moveOrderUp(noteId) {
+  const sorted = getSortedConfirmed();
+  const idx = sorted.findIndex(n => n.id === noteId);
+  if (idx <= 0) return;
+  swapOrders(sorted[idx], sorted[idx - 1]);
 }
 
 function moveOrderDown(noteId) {
-  const note = notes.find(n => n.id === noteId);
-  if (!note || !note.questionOrder) return;
-  const max = maxConfirmedOrder();
-  if (note.questionOrder >= max) return;
-  setQuestionOrder(noteId, note.questionOrder + 1);
+  const sorted = getSortedConfirmed();
+  const idx = sorted.findIndex(n => n.id === noteId);
+  if (idx === -1 || idx === sorted.length - 1) return;
+  swapOrders(sorted[idx], sorted[idx + 1]);
 }
 
 // ============================================================
@@ -259,7 +291,7 @@ function getVisibleNotes() {
   if (activeFilter === 'sequence') {
     return notes
       .filter(n => n.confirmed)
-      .sort((a, b) => (a.questionOrder || 999) - (b.questionOrder || 999));
+      .sort((a, b) => compareOrders(a.questionOrder, b.questionOrder));
   }
   return notes;
 }
@@ -315,7 +347,7 @@ function renderBoard() {
 
     const help = document.createElement('div');
     help.className = 'sequence-help';
-    help.innerHTML = `질문 순서 — <b>↑↓ 버튼</b>으로 한 칸씩 이동, <b>Q 칩 탭</b>하면 원하는 위치로 한번에 이동`;
+    help.innerHTML = `질문 순서 — <b>↑↓</b>로 한 칸씩 이동, <b>Q칩 탭</b>해서 직접 입력 (예: <b>2-1</b>로 서브 질문)`;
     wrap.appendChild(help);
 
     for (const note of visible) {
@@ -386,13 +418,22 @@ function createNoteEl(note, isSequence = false) {
 
   // Action buttons differ in sequence mode
   const actionsHtml = isSequence ? `
-    <button class="note-action-btn move-up" data-action="move-up" title="위로 (Q${qOrder ? qOrder - 1 : ''})">↑</button>
-    <button class="note-action-btn move-down" data-action="move-down" title="아래로 (Q${qOrder ? qOrder + 1 : ''})">↓</button>
+    <button class="note-action-btn move-up" data-action="move-up" title="위로">↑</button>
+    <button class="note-action-btn move-down" data-action="move-down" title="아래로">↓</button>
     <button class="note-action-btn is-delete" data-action="delete" title="삭제">×</button>
   ` : `
     <button class="note-action-btn is-confirm ${note.confirmed ? 'active' : ''}" data-action="confirm" title="확정 ${note.confirmed ? '해제' : '표시'}">✓</button>
     <button class="note-action-btn is-delete" data-action="delete" title="삭제">×</button>
   `;
+
+  // In sequence mode, indent sub-questions visually by depth
+  if (isSequence && qOrder) {
+    const depth = Math.max(0, parseOrder(qOrder).length - 1);
+    if (depth > 0) {
+      el.style.marginLeft = (depth * 32) + 'px';
+      el.dataset.depth = String(depth);
+    }
+  }
 
   el.innerHTML = `
     <div class="note-head">
@@ -538,12 +579,19 @@ function attachNoteHandlers(el, note, isSequence = false) {
       } else if (action === 'move-down') {
         moveOrderDown(note.id);
       } else if (action === 'set-order') {
-        const max = maxConfirmedOrder();
-        const input = prompt(`질문 순서를 입력하세요 (1 ~ ${max})\n현재: Q${note.questionOrder}`, note.questionOrder);
+        const input = prompt(
+          `질문 순서를 입력하세요\n` +
+          `예) 1, 2, 3 또는 2-1, 2-2 (서브질문)\n` +
+          `현재: Q${note.questionOrder}`,
+          note.questionOrder
+        );
         if (input == null) return;
-        const newOrder = parseInt(input);
-        if (Number.isFinite(newOrder) && newOrder >= 1 && newOrder <= max) {
-          setQuestionOrder(note.id, newOrder);
+        const trimmed = input.trim();
+        if (!trimmed) return;
+        if (isValidOrderString(trimmed)) {
+          setQuestionOrder(note.id, trimmed);
+        } else {
+          alert('형식이 올바르지 않아요.\n숫자 또는 1-2, 3-1 형태로 입력해주세요.');
         }
       }
     });
@@ -708,19 +756,7 @@ function toggleFlag(note, key) {
   // Special handling for confirmed → manage questionOrder
   if (key === 'confirmed') {
     if (note.confirmed) {
-      // Unconfirming: clear order, shift others down
-      const removedOrder = note.questionOrder;
-      if (removedOrder) {
-        for (const n of notes) {
-          if (n.id === note.id) continue;
-          if (n.confirmed && n.questionOrder && n.questionOrder > removedOrder) {
-            const shifted = { ...n, questionOrder: n.questionOrder - 1 };
-            const idx = notes.findIndex(x => x.id === n.id);
-            if (idx !== -1) notes[idx] = shifted;
-            socket.emit('update_note', shifted);
-          }
-        }
-      }
+      // Unconfirming: just clear order. No auto-shift (hierarchical numbering — let user re-arrange manually).
       const updated = {
         ...note,
         confirmed: false,
@@ -733,8 +769,8 @@ function toggleFlag(note, key) {
       if (idx !== -1) notes[idx] = updated;
       socket.emit('update_note', updated);
     } else {
-      // Confirming: assign next available order
-      const nextOrder = maxConfirmedOrder() + 1;
+      // Confirming: assign next top-level number as string
+      const nextOrder = String(maxTopLevelOrder() + 1);
       const updated = {
         ...note,
         confirmed: true,
