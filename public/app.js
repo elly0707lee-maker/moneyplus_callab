@@ -54,6 +54,87 @@ function appendHistory(note, entry) {
 }
 
 // ============================================================
+// Question Order helpers
+// ============================================================
+function maxConfirmedOrder(excludeId) {
+  let max = 0;
+  for (const n of notes) {
+    if (excludeId && n.id === excludeId) continue;
+    if (n.confirmed && n.questionOrder) {
+      if (n.questionOrder > max) max = n.questionOrder;
+    }
+  }
+  return max;
+}
+
+// Ensure all confirmed notes have a questionOrder. Assigns missing ones in array order.
+function ensureOrders() {
+  const confirmed = notes.filter(n => n.confirmed);
+  const withoutOrder = confirmed.filter(n => !n.questionOrder);
+  if (withoutOrder.length === 0) return;
+
+  let next = maxConfirmedOrder() + 1;
+  for (const n of withoutOrder) {
+    const updated = { ...n, questionOrder: next++ };
+    const idx = notes.findIndex(x => x.id === n.id);
+    if (idx !== -1) notes[idx] = updated;
+    socket.emit('update_note', updated);
+  }
+}
+
+// Set a confirmed note to a specific order, shifting others as needed.
+function setQuestionOrder(noteId, newOrder) {
+  const note = notes.find(n => n.id === noteId);
+  if (!note || !note.confirmed) return;
+
+  const max = maxConfirmedOrder();
+  newOrder = Math.max(1, Math.min(max, newOrder));
+  const oldOrder = note.questionOrder || max + 1;
+  if (newOrder === oldOrder) return;
+
+  const updates = [];
+  for (const n of notes) {
+    if (n.id === note.id) continue;
+    if (!n.confirmed || !n.questionOrder) continue;
+
+    let newOrd = n.questionOrder;
+    if (newOrder > oldOrder && n.questionOrder > oldOrder && n.questionOrder <= newOrder) {
+      newOrd = n.questionOrder - 1;
+    } else if (newOrder < oldOrder && n.questionOrder >= newOrder && n.questionOrder < oldOrder) {
+      newOrd = n.questionOrder + 1;
+    }
+    if (newOrd !== n.questionOrder) {
+      const updated = { ...n, questionOrder: newOrd };
+      const idx = notes.findIndex(x => x.id === n.id);
+      if (idx !== -1) notes[idx] = updated;
+      updates.push(updated);
+    }
+  }
+
+  const updatedSelf = { ...note, questionOrder: newOrder };
+  const selfIdx = notes.findIndex(x => x.id === note.id);
+  if (selfIdx !== -1) notes[selfIdx] = updatedSelf;
+  updates.push(updatedSelf);
+
+  for (const u of updates) socket.emit('update_note', u);
+  renderBoard();
+}
+
+function moveOrderUp(noteId) {
+  const note = notes.find(n => n.id === noteId);
+  if (!note || !note.questionOrder || note.questionOrder <= 1) return;
+  setQuestionOrder(noteId, note.questionOrder - 1);
+}
+
+function moveOrderDown(noteId) {
+  const note = notes.find(n => n.id === noteId);
+  if (!note || !note.questionOrder) return;
+  const max = maxConfirmedOrder();
+  if (note.questionOrder >= max) return;
+  setQuestionOrder(noteId, note.questionOrder + 1);
+}
+
+// ============================================================
 // Init
 // ============================================================
 function init() {
@@ -175,6 +256,11 @@ document.querySelectorAll('.filter-pill').forEach(pill => {
 function getVisibleNotes() {
   if (activeFilter === 'confirmed') return notes.filter(n => n.confirmed);
   if (activeFilter === 'cg') return notes.filter(n => (n.cgIdeas || []).length > 0);
+  if (activeFilter === 'sequence') {
+    return notes
+      .filter(n => n.confirmed)
+      .sort((a, b) => (a.questionOrder || 999) - (b.questionOrder || 999));
+  }
   return notes;
 }
 
@@ -182,12 +268,18 @@ function updateCounts() {
   document.getElementById('count-all').textContent = notes.length;
   document.getElementById('count-confirmed').textContent = notes.filter(n => n.confirmed).length;
   document.getElementById('count-cg').textContent = notes.filter(n => (n.cgIdeas || []).length > 0).length;
+  const seqEl = document.getElementById('count-sequence');
+  if (seqEl) seqEl.textContent = notes.filter(n => n.confirmed).length;
 }
 
 // ============================================================
 // Render
 // ============================================================
 function renderBoard() {
+  const isSequence = activeFilter === 'sequence';
+  board.classList.toggle('is-sequence', isSequence);
+  if (isSequence) ensureOrders();
+
   updateCounts();
   board.innerHTML = '';
 
@@ -201,6 +293,11 @@ function renderBoard() {
         <div class="empty-state-title">아직 비어있어요</div>
         <div class="empty-state-desc">우측 상단 ＋ 버튼으로 첫 메모를 추가해보세요</div>
       `;
+    } else if (isSequence) {
+      empty.innerHTML = `
+        <div class="empty-state-title">확정된 메모가 없어요</div>
+        <div class="empty-state-desc">메모 위 ✓ 버튼으로 확정 표시하면 자동으로 Q1, Q2... 순서가 매겨집니다</div>
+      `;
     } else {
       const filterName = activeFilter === 'confirmed' ? '확정된' : 'CG 아이디어가 있는';
       empty.innerHTML = `
@@ -212,41 +309,69 @@ function renderBoard() {
     return;
   }
 
-  for (const note of visible) {
-    board.appendChild(createNoteEl(note));
+  if (isSequence) {
+    const wrap = document.createElement('div');
+    wrap.className = 'sequence-list';
+
+    const help = document.createElement('div');
+    help.className = 'sequence-help';
+    help.innerHTML = `질문 순서 — <b>↑↓ 버튼</b>으로 한 칸씩 이동, <b>Q 칩 탭</b>하면 원하는 위치로 한번에 이동`;
+    wrap.appendChild(help);
+
+    for (const note of visible) {
+      wrap.appendChild(createNoteEl(note, true));
+    }
+    board.appendChild(wrap);
+  } else {
+    for (const note of visible) {
+      board.appendChild(createNoteEl(note, false));
+    }
   }
   recomputeBoardSize();
 }
 
-// Grow board vertically to fit the lowest note + buffer.
-// Called after render, after drag, and on window resize.
+// Grow board to fit notes (both directions) + buffer space.
 function recomputeBoardSize() {
+  if (activeFilter === 'sequence') {
+    // Sequence is a normal vertical list — let it size itself naturally.
+    board.style.minWidth = '';
+    board.style.minHeight = '';
+    return;
+  }
   const visible = getVisibleNotes();
+  let maxRight = 0;
   let maxBottom = 0;
   for (const note of visible) {
     const noteEl = board.querySelector(`[data-id="${note.id}"]`);
+    const w = noteEl ? noteEl.offsetWidth : 270;
     const h = noteEl ? noteEl.offsetHeight : 200;
+    const right = (note.x || 0) + w;
     const bottom = (note.y || 0) + h;
+    if (right > maxRight) maxRight = right;
     if (bottom > maxBottom) maxBottom = bottom;
   }
   const buffer = 500;
-  const defaultMin = Math.max(600, window.innerHeight - 180);
-  const finalMin = Math.max(defaultMin, maxBottom + buffer);
-  board.style.minHeight = finalMin + 'px';
+  // Default: at least the visible viewport area
+  const defaultMinW = board.clientWidth || 600;
+  const defaultMinH = board.clientHeight || 600;
+  board.style.minWidth = Math.max(defaultMinW, maxRight + buffer) + 'px';
+  board.style.minHeight = Math.max(defaultMinH, maxBottom + buffer) + 'px';
 }
 
 window.addEventListener('resize', () => {
   recomputeBoardSize();
 });
 
-function createNoteEl(note) {
+function createNoteEl(note, isSequence = false) {
   const el = document.createElement('div');
   el.className = 'note';
   if (note.confirmed) el.classList.add('confirmed');
   el.dataset.id = note.id;
   el.dataset.category = note.category || 'memo';
-  el.style.left = note.x + 'px';
-  el.style.top = note.y + 'px';
+  if (!isSequence) {
+    el.style.left = note.x + 'px';
+    el.style.top = note.y + 'px';
+  }
 
   const cat = getCat(note.category);
   const text = note.text || '';
@@ -257,6 +382,17 @@ function createNoteEl(note) {
   const isCgInputOpen = cgInputState && cgInputState.noteId === note.id;
   const isComInputOpen = commentInputState && commentInputState.noteId === note.id;
   const isHistoryOpen = expandedHistory.has(note.id);
+  const qOrder = note.questionOrder;
+
+  // Action buttons differ in sequence mode
+  const actionsHtml = isSequence ? `
+    <button class="note-action-btn move-up" data-action="move-up" title="위로 (Q${qOrder ? qOrder - 1 : ''})">↑</button>
+    <button class="note-action-btn move-down" data-action="move-down" title="아래로 (Q${qOrder ? qOrder + 1 : ''})">↓</button>
+    <button class="note-action-btn is-delete" data-action="delete" title="삭제">×</button>
+  ` : `
+    <button class="note-action-btn is-confirm ${note.confirmed ? 'active' : ''}" data-action="confirm" title="확정 ${note.confirmed ? '해제' : '표시'}">✓</button>
+    <button class="note-action-btn is-delete" data-action="delete" title="삭제">×</button>
+  `;
 
   el.innerHTML = `
     <div class="note-head">
@@ -265,11 +401,9 @@ function createNoteEl(note) {
         <span>${cat.ko}</span>
       </span>
       ${note.confirmed ? '<span class="chip chip-confirmed">✓ 확정</span>' : ''}
+      ${qOrder ? `<span class="chip chip-q" data-action="set-order">Q${qOrder}</span>` : ''}
       ${cgIdeas.length > 0 ? `<span class="chip chip-cg">● CG ${cgIdeas.length}</span>` : ''}
-      <div class="note-actions">
-        <button class="note-action-btn is-confirm ${note.confirmed ? 'active' : ''}" data-action="confirm" title="확정 ${note.confirmed ? '해제' : '표시'}">✓</button>
-        <button class="note-action-btn is-delete" data-action="delete" title="삭제">×</button>
-      </div>
+      <div class="note-actions">${actionsHtml}</div>
     </div>
     <div class="note-body ${isEmpty ? 'placeholder' : ''}" data-role="body">${
       isEmpty ? '터치하여 메모 입력...' : escapeHtml(text)
@@ -291,7 +425,7 @@ function createNoteEl(note) {
     ${isHistoryOpen ? renderHistoryPanel(history) : ''}
   `;
 
-  attachNoteHandlers(el, note);
+  attachNoteHandlers(el, note, isSequence);
   return el;
 }
 
@@ -383,8 +517,8 @@ function renderHistoryPanel(history) {
 // ============================================================
 // Note interaction handlers
 // ============================================================
-function attachNoteHandlers(el, note) {
-  // Header buttons (confirm, delete) and footer history toggle
+function attachNoteHandlers(el, note, isSequence = false) {
+  // Header buttons (confirm, delete, move-up, move-down, set-order, history toggle)
   el.querySelectorAll('[data-action]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -399,6 +533,18 @@ function attachNoteHandlers(el, note) {
         toggleFlag(note, 'confirmed');
       } else if (action === 'toggle-history') {
         toggleHistory(note.id);
+      } else if (action === 'move-up') {
+        moveOrderUp(note.id);
+      } else if (action === 'move-down') {
+        moveOrderDown(note.id);
+      } else if (action === 'set-order') {
+        const max = maxConfirmedOrder();
+        const input = prompt(`질문 순서를 입력하세요 (1 ~ ${max})\n현재: Q${note.questionOrder}`, note.questionOrder);
+        if (input == null) return;
+        const newOrder = parseInt(input);
+        if (Number.isFinite(newOrder) && newOrder >= 1 && newOrder <= max) {
+          setQuestionOrder(note.id, newOrder);
+        }
       }
     });
   });
@@ -462,6 +608,19 @@ function attachNoteHandlers(el, note) {
   // ===== Unified pointer interaction (drag + tap-to-edit) =====
   const body = el.querySelector('[data-role="body"]');
 
+  // In sequence mode, we don't drag the card around (only ↑↓ buttons reorder).
+  // Body click still opens the editor.
+  if (isSequence) {
+    if (body) {
+      body.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (editingId === note.id) return;
+        startEdit(el, body, note);
+      });
+    }
+    return;
+  }
+
   el.addEventListener('pointerdown', (e) => {
     // Skip if interacting with buttons / inputs / contenteditable / cg / comments / history
     if (e.target.tagName === 'BUTTON') return;
@@ -499,15 +658,18 @@ function attachNoteHandlers(el, note) {
       }
       if (moved) {
         ev.preventDefault();
-        const x = Math.max(0, ev.clientX - boardRect.left - offset.x);
-        const y = Math.max(0, ev.clientY - boardRect.top - offset.y);
+        const x = Math.max(0, ev.clientX - boardRect.left - offset.x + board.scrollLeft);
+        const y = Math.max(0, ev.clientY - boardRect.top - offset.y + board.scrollTop);
         el.style.left = x + 'px';
         el.style.top = y + 'px';
 
-        // Grow board live if dragging near or past current bottom
+        // Grow board live in either direction if dragging near or past edges
+        const noteW = el.offsetWidth;
         const noteH = el.offsetHeight;
-        const needed = y + noteH + 200;
-        if (needed > board.offsetHeight) {
+        if (x + noteW + 200 > board.scrollWidth) {
+          board.style.minWidth = (x + noteW + 600) + 'px';
+        }
+        if (y + noteH + 200 > board.scrollHeight) {
           board.style.minHeight = (y + noteH + 600) + 'px';
         }
       }
@@ -543,8 +705,55 @@ function attachNoteHandlers(el, note) {
 }
 
 function toggleFlag(note, key) {
+  // Special handling for confirmed → manage questionOrder
+  if (key === 'confirmed') {
+    if (note.confirmed) {
+      // Unconfirming: clear order, shift others down
+      const removedOrder = note.questionOrder;
+      if (removedOrder) {
+        for (const n of notes) {
+          if (n.id === note.id) continue;
+          if (n.confirmed && n.questionOrder && n.questionOrder > removedOrder) {
+            const shifted = { ...n, questionOrder: n.questionOrder - 1 };
+            const idx = notes.findIndex(x => x.id === n.id);
+            if (idx !== -1) notes[idx] = shifted;
+            socket.emit('update_note', shifted);
+          }
+        }
+      }
+      const updated = {
+        ...note,
+        confirmed: false,
+        questionOrder: null,
+        history: appendHistory(note, makeHistoryEntry('unconfirm', '확정 해제')),
+        lastEditedBy: userName,
+        lastEditedAt: new Date().toISOString(),
+      };
+      const idx = notes.findIndex(n => n.id === note.id);
+      if (idx !== -1) notes[idx] = updated;
+      socket.emit('update_note', updated);
+    } else {
+      // Confirming: assign next available order
+      const nextOrder = maxConfirmedOrder() + 1;
+      const updated = {
+        ...note,
+        confirmed: true,
+        questionOrder: nextOrder,
+        history: appendHistory(note, makeHistoryEntry('confirm', `확정 (Q${nextOrder})`)),
+        lastEditedBy: userName,
+        lastEditedAt: new Date().toISOString(),
+      };
+      const idx = notes.findIndex(n => n.id === note.id);
+      if (idx !== -1) notes[idx] = updated;
+      socket.emit('update_note', updated);
+    }
+    renderBoard();
+    return;
+  }
+
+  // Other flags: simple toggle
   const wasOn = !!note[key];
-  const summary = key === 'confirmed' ? (wasOn ? '확정 해제' : '확정 표시') : `${key} 토글`;
+  const summary = `${key} ${wasOn ? '해제' : '표시'}`;
   const updated = {
     ...note,
     [key]: !note[key],
@@ -757,15 +966,15 @@ function addNote(category) {
     activeFilter = 'all';
     document.querySelectorAll('.filter-pill').forEach(p => p.classList.toggle('active', p.dataset.filter === 'all'));
   }
-  const boardRect = board.getBoundingClientRect();
   const noteWidth = window.innerWidth <= 380 ? 220 : (window.innerWidth <= 768 ? 240 : 270);
 
-  // Place new note inside the currently-visible viewport, accounting for scroll.
-  // boardRect.top is negative if user scrolled past board start.
-  const desiredViewportY = 130 + Math.random() * Math.max(80, window.innerHeight - 380);
-  const yInBoard = Math.max(20, desiredViewportY - boardRect.top);
-  const xMax = Math.max(60, window.innerWidth - noteWidth - 60);
-  const xInBoard = Math.max(20, Math.random() * xMax + 20);
+  // Place new note inside the currently-visible portion of the board's scroll area.
+  const visW = board.clientWidth;
+  const visH = board.clientHeight;
+  const xRange = Math.max(60, visW - noteWidth - 60);
+  const yRange = Math.max(60, visH * 0.4);
+  const xInBoard = board.scrollLeft + 30 + Math.random() * xRange;
+  const yInBoard = board.scrollTop + 40 + Math.random() * yRange;
 
   const note = {
     id: 'n_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
@@ -774,6 +983,7 @@ function addNote(category) {
     text: '',
     category,
     confirmed: false,
+    questionOrder: null,
     cgIdeas: [],
     comments: [],
     history: [makeHistoryEntry('create', '메모 생성')],
