@@ -230,16 +230,24 @@ socket.on('meta_updated', (newMeta) => {
   const prevMeta = meta || {};
   const broadcastDateChanged =
     (prevMeta.broadcastDate || null) !== (newMeta.broadcastDate || null);
-  const cgListChanged =
-    JSON.stringify(prevMeta.cgList || []) !== JSON.stringify(newMeta.cgList || []);
+
+  // Detect any CG list-related change across both lists (A and B)
+  let cgListChanged = false;
+  let cgListPosOrTitleChanged = false;
+  for (const id of ['A', 'B']) {
+    const k1 = id === 'A' ? 'cgList' : 'cgListB';
+    const k2 = k1 + 'Position';
+    const k3 = k1 + 'Title';
+    if (JSON.stringify(prevMeta[k1] || []) !== JSON.stringify(newMeta[k1] || [])) cgListChanged = true;
+    if (JSON.stringify(prevMeta[k2] || null) !== JSON.stringify(newMeta[k2] || null)) cgListPosOrTitleChanged = true;
+    if ((prevMeta[k3] || null) !== (newMeta[k3] || null)) cgListPosOrTitleChanged = true;
+  }
 
   meta = newMeta;
   renderMeta();
 
-  if (cgListChanged && activeFilter === 'cglist') renderBoard();
-  // Always update the count chip
-  const cglistEl = document.getElementById('count-cglist');
-  if (cglistEl) cglistEl.textContent = (newMeta.cgList || []).length;
+  // Re-render board when CG list data, card position, or card title changed (only on canvas 'all')
+  if ((cgListChanged || cgListPosOrTitleChanged) && activeFilter === 'all') renderBoard();
 
   if (broadcastDateChanged && newMeta.broadcastDate) {
     setTicker(`방송일이 ${formatBroadcastDate(newMeta.broadcastDate)}로 설정되었습니다`);
@@ -317,8 +325,6 @@ function updateCounts() {
   let cgCount = 0;
   for (const n of notes) cgCount += (n.cgIdeas || []).length;
   document.getElementById('count-cg').textContent = cgCount;
-  const cglistEl = document.getElementById('count-cglist');
-  if (cglistEl) cglistEl.textContent = getGlobalCGList().length;
   const seqEl = document.getElementById('count-sequence');
   if (seqEl) seqEl.textContent = notes.filter(n => n.confirmed).length;
 }
@@ -329,10 +335,8 @@ function updateCounts() {
 function renderBoard() {
   const isSequence = activeFilter === 'sequence';
   const isCGIdeas = activeFilter === 'cg';
-  const isCGFinal = activeFilter === 'cglist';
   board.classList.toggle('is-sequence', isSequence);
   board.classList.toggle('is-cg-list', isCGIdeas);
-  board.classList.toggle('is-cg-final', isCGFinal);
   if (isSequence) ensureOrders();
 
   updateCounts();
@@ -345,16 +349,9 @@ function renderBoard() {
     return;
   }
 
-  // CG final list — global, separate from memos (stored in meta.cgList)
-  if (isCGFinal) {
-    board.appendChild(renderCGFinalView());
-    recomputeBoardSize();
-    return;
-  }
-
   const visible = getVisibleNotes();
 
-  if (visible.length === 0) {
+  if (visible.length === 0 && activeFilter !== 'all') {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
     if (notes.length === 0) {
@@ -393,6 +390,12 @@ function renderBoard() {
   } else {
     for (const note of visible) {
       board.appendChild(createNoteEl(note, false));
+    }
+    // On the canvas 'all' filter, render both CG list cards (A and B for two parties)
+    if (activeFilter === 'all') {
+      for (const listId of CG_LIST_IDS) {
+        board.appendChild(createCGListCardEl(listId));
+      }
     }
   }
   recomputeBoardSize();
@@ -504,145 +507,311 @@ function createCGListItemEl(idea, note) {
 }
 
 // ============================================================
-// CG Final list view (global, stored in meta.cgList)
+// CG List cards on canvas (two cards: A and B for two parties)
+// Each lives like a memo, position/title/items stored in meta.
 // ============================================================
-function renderCGFinalView() {
-  const wrap = document.createElement('div');
-  wrap.className = 'cg-final-container';
+const CG_LIST_IDS = ['A', 'B'];
+const CG_LIST_DEFAULTS = {
+  A: { title: 'CG 리스트', position: { x: 40, y: 40 } },
+  B: { title: 'CG 리스트 ②', position: { x: 40, y: 380 } },
+};
 
-  const header = document.createElement('div');
-  header.className = 'cg-final-header';
-  header.innerHTML = `
-    <div class="cg-final-title">📺 최종 CG 리스트</div>
-    <div class="cg-final-sub">방송에서 만들 CG들. 메모의 CG 아이디어 옆 <b>→</b> 버튼으로 채택하거나, 아래에 직접 입력</div>
-  `;
-  wrap.appendChild(header);
+// per-list input/title state — preserved across re-renders
+const cgListInputState = {
+  A: { value: '', focused: false },
+  B: { value: '', focused: false },
+};
+const cgListTitleEditing = { A: false, B: false };
 
-  const items = getGlobalCGList();
-
-  if (items.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'cg-final-empty';
-    empty.innerHTML = `
-      <div class="empty-state-title">아직 비어있어요</div>
-      <div class="empty-state-desc">메모의 CG 아이디어 옆 → 버튼을 누르거나, 아래 입력창에 직접 입력</div>
-    `;
-    wrap.appendChild(empty);
-  } else {
-    const list = document.createElement('div');
-    list.className = 'cg-final-list';
-    items.forEach((item, idx) => {
-      list.appendChild(createCGFinalItemEl(item, idx + 1));
-    });
-    wrap.appendChild(list);
-  }
-
-  // Input row at bottom — always visible
-  const inputRow = document.createElement('div');
-  inputRow.className = 'cg-final-input-row';
-  inputRow.innerHTML = `
-    <span class="cg-final-input-prefix">📺</span>
-    <input type="text" class="cg-final-input" placeholder="새 CG 입력 후 Enter..." maxlength="100" />
-  `;
-  const input = inputRow.querySelector('input');
-  input.value = cglistInputValue || '';
-  if (cglistInputOpen) setTimeout(() => input.focus(), 30);
-  input.addEventListener('input', (e) => { cglistInputValue = e.target.value; });
-  input.addEventListener('focus', () => { cglistInputOpen = true; });
-  input.addEventListener('blur', () => { cglistInputOpen = false; });
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const text = (cglistInputValue || '').trim();
-      if (text) {
-        addGlobalCGListItem(text, null);
-        cglistInputValue = '';
-      }
-    } else if (e.key === 'Escape') {
-      cglistInputValue = '';
-      input.value = '';
-      input.blur();
-    }
-  });
-  wrap.appendChild(inputRow);
-
-  return wrap;
+function cglKey(listId, suffix = '') {
+  // A → 'cgList' / 'cgListPosition' / 'cgListTitle' (back-compat)
+  // B → 'cgListB' / 'cgListBPosition' / 'cgListBTitle'
+  const idPart = listId === 'A' ? '' : listId;
+  return 'cgList' + idPart + suffix;
 }
 
-function createCGFinalItemEl(item, displayIdx) {
-  const el = document.createElement('div');
-  el.className = 'cg-final-item';
+function getCGListItems(listId) {
+  const v = meta[cglKey(listId)];
+  return Array.isArray(v) ? v : [];
+}
 
-  // Source memo info (if linked)
+function getCGListPosition(listId) {
+  return meta[cglKey(listId, 'Position')] || CG_LIST_DEFAULTS[listId].position;
+}
+
+function getCGListTitle(listId) {
+  const v = meta[cglKey(listId, 'Title')];
+  return (typeof v === 'string' && v.trim()) ? v : CG_LIST_DEFAULTS[listId].title;
+}
+
+function saveCGListMeta(listId, partial) {
+  // partial keys: items, position, title
+  const updates = {};
+  if ('items' in partial) updates[cglKey(listId)] = partial.items;
+  if ('position' in partial) updates[cglKey(listId, 'Position')] = partial.position;
+  if ('title' in partial) updates[cglKey(listId, 'Title')] = partial.title;
+  meta = { ...meta, ...updates };
+  socket.emit('set_meta', updates);
+}
+
+function addCGListItem(listId, text, source) {
+  const newItem = {
+    id: 'cgl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+    text,
+    sourceNoteId: source ? source.noteId : null,
+    sourceSnippet: source ? source.snippet : null,
+    sourceCategory: source ? source.category : null,
+    createdBy: userName,
+    createdAt: new Date().toISOString(),
+  };
+  saveCGListMeta(listId, { items: [...getCGListItems(listId), newItem] });
+  renderBoard();
+}
+
+function removeCGListItem(listId, itemId) {
+  saveCGListMeta(listId, { items: getCGListItems(listId).filter(i => i.id !== itemId) });
+  renderBoard();
+}
+
+// Hash a username to a stable hue for color-coding contributors
+function userHue(name) {
+  let hash = 0;
+  const s = name || '익명';
+  for (let i = 0; i < s.length; i++) {
+    hash = ((hash << 5) - hash) + s.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash) % 360;
+}
+
+function authorChipHtml(name) {
+  const hue = userHue(name);
+  return `<span class="cglc-author" style="color: hsl(${hue}, 55%, 38%); background: hsl(${hue}, 70%, 96%); border-color: hsl(${hue}, 50%, 85%);">${escapeHtml(name || '익명')}</span>`;
+}
+
+function createCGListCardEl(listId) {
+  const items = getCGListItems(listId);
+  const pos = getCGListPosition(listId);
+  const title = getCGListTitle(listId);
+
+  const el = document.createElement('div');
+  el.className = 'cg-list-card';
+  el.dataset.listId = listId;
+  el.style.left = pos.x + 'px';
+  el.style.top = pos.y + 'px';
+
+  const itemsHtml = items.length === 0
+    ? `<div class="cglc-empty">메모의 CG 아이디어 옆 <b>→</b> 또는<br/>아래 입력창으로 추가하세요</div>`
+    : `<div class="cglc-list">
+        ${items.map((item, i) => createCGListCardItemHtml(item, i + 1)).join('')}
+      </div>`;
+
+  el.innerHTML = `
+    <div class="cglc-head" data-role="cglc-drag">
+      <span class="cglc-icon">📺</span>
+      <input type="text" class="cglc-title-input" data-role="cglc-title" value="${escapeHtml(title)}" maxlength="30" />
+      ${items.length > 0 ? `<span class="cglc-count">${items.length}</span>` : ''}
+    </div>
+    <div class="cglc-body">${itemsHtml}</div>
+    <div class="cglc-input-row">
+      <span class="cglc-input-prefix">+</span>
+      <input type="text" class="cglc-input" placeholder="새 CG 입력 후 Enter..." maxlength="100" />
+    </div>
+  `;
+
+  attachCGListCardHandlers(el, listId);
+  return el;
+}
+
+function createCGListCardItemHtml(item, idx) {
   let sourceHtml = '';
   if (item.sourceNoteId) {
     const sourceNote = notes.find(n => n.id === item.sourceNoteId);
     if (sourceNote) {
       const cat = getCat(sourceNote.category || item.sourceCategory);
-      const snippet = item.sourceSnippet || (sourceNote.text || '').slice(0, 30);
-      sourceHtml = `
-        <button class="cg-final-source" data-cglist-action="goto" data-note-id="${sourceNote.id}" title="원본 메모 보기">
+      sourceHtml = `<button class="cglc-source" data-cglist-action="goto" data-note-id="${sourceNote.id}" title="원본 메모 보기">
           <span class="cat-dot" style="background:${cat.color};"></span>
-          <span class="cg-final-source-name">${cat.ko}</span>
-          ${snippet ? `<span class="cg-final-source-snippet">· ${escapeHtml(snippet)}</span>` : ''}
-          <span class="cg-final-source-arrow">↗</span>
-        </button>
-      `;
+          <span>${cat.ko}</span>
+          <span class="cglc-source-arrow">↗</span>
+        </button>`;
     } else {
-      // source memo deleted
-      sourceHtml = `<span class="cg-final-source orphan">출처 메모 삭제됨</span>`;
+      sourceHtml = `<span class="cglc-source orphan">출처 삭제됨</span>`;
     }
   } else {
-    sourceHtml = `<span class="cg-final-source free">직접 입력</span>`;
+    sourceHtml = `<span class="cglc-source free">직접 입력</span>`;
   }
 
-  el.innerHTML = `
-    <div class="cg-final-num">${displayIdx}</div>
-    <div class="cg-final-body">
-      <div class="cg-final-text">${escapeHtml(item.text)}</div>
-      <div class="cg-final-meta">
-        ${sourceHtml}
-        <span class="meta-sep">·</span>
-        <span>${escapeHtml(item.createdBy || '익명')}</span>
-        <span class="meta-sep">·</span>
-        <span>${formatTime(item.createdAt)}</span>
+  return `
+    <div class="cglc-item" data-item-id="${item.id}">
+      <span class="cglc-num">${idx}.</span>
+      <div class="cglc-content">
+        <div class="cglc-text">${escapeHtml(item.text)}</div>
+        <div class="cglc-meta">
+          ${sourceHtml}
+          ${authorChipHtml(item.createdBy)}
+        </div>
       </div>
+      <button class="cglc-remove" data-cglist-action="remove">×</button>
     </div>
-    <button class="cg-final-remove" data-cglist-action="remove" title="삭제">×</button>
   `;
+}
 
-  el.querySelector('[data-cglist-action="remove"]').addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (confirm('이 CG 항목을 삭제할까요?')) {
-      removeGlobalCGListItem(item.id);
-    }
+function attachCGListCardHandlers(el, listId) {
+  // Remove buttons
+  el.querySelectorAll('[data-cglist-action="remove"]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const itemEl = btn.closest('[data-item-id]');
+      const itemId = itemEl ? itemEl.dataset.itemId : null;
+      if (itemId && confirm('이 CG를 리스트에서 삭제할까요?')) {
+        removeCGListItem(listId, itemId);
+      }
+    });
+    btn.addEventListener('pointerdown', (e) => e.stopPropagation());
   });
 
-  const gotoBtn = el.querySelector('[data-cglist-action="goto"]');
-  if (gotoBtn) {
-    gotoBtn.addEventListener('click', (e) => {
+  // Goto source memo
+  el.querySelectorAll('[data-cglist-action="goto"]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      activeFilter = 'all';
-      document.querySelectorAll('.filter-pill').forEach(p =>
-        p.classList.toggle('active', p.dataset.filter === 'all')
-      );
-      renderBoard();
-      requestAnimationFrame(() => {
-        const noteEl = board.querySelector(`[data-id="${item.sourceNoteId}"]`);
-        if (!noteEl) return;
-        noteEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
-        noteEl.classList.add('cg-pulse');
-        setTimeout(() => noteEl.classList.remove('cg-pulse'), 1800);
-      });
+      const noteId = btn.dataset.noteId;
+      const noteEl = board.querySelector(`[data-id="${noteId}"]`);
+      if (!noteEl) return;
+      noteEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+      noteEl.classList.add('cg-pulse');
+      setTimeout(() => noteEl.classList.remove('cg-pulse'), 1800);
     });
+    btn.addEventListener('pointerdown', (e) => e.stopPropagation());
+  });
+
+  // Title editing (click to edit, Enter to save, Escape to cancel)
+  const titleInput = el.querySelector('[data-role="cglc-title"]');
+  if (titleInput) {
+    let originalTitle = getCGListTitle(listId);
+    titleInput.addEventListener('focus', () => {
+      cgListTitleEditing[listId] = true;
+      originalTitle = titleInput.value;
+      titleInput.select();
+    });
+    titleInput.addEventListener('blur', () => {
+      cgListTitleEditing[listId] = false;
+      const newTitle = (titleInput.value || '').trim();
+      if (newTitle && newTitle !== originalTitle) {
+        saveCGListMeta(listId, { title: newTitle });
+      } else {
+        titleInput.value = originalTitle;
+      }
+    });
+    titleInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); titleInput.blur(); }
+      else if (e.key === 'Escape') { e.preventDefault(); titleInput.value = originalTitle; titleInput.blur(); }
+    });
+    titleInput.addEventListener('pointerdown', (e) => e.stopPropagation());
+    if (cgListTitleEditing[listId]) {
+      setTimeout(() => titleInput.focus(), 30);
+    }
   }
 
-  return el;
+  // Item input
+  const input = el.querySelector('.cglc-input');
+  const state = cgListInputState[listId];
+  if (input && state) {
+    input.value = state.value || '';
+    if (state.focused) {
+      setTimeout(() => {
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      }, 30);
+    }
+    input.addEventListener('input', (e) => { state.value = e.target.value; });
+    input.addEventListener('focus', () => { state.focused = true; });
+    input.addEventListener('blur', () => { state.focused = false; });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const text = (state.value || '').trim();
+        if (text) {
+          addCGListItem(listId, text, null);
+          state.value = '';
+        }
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        state.value = '';
+        input.value = '';
+        input.blur();
+      }
+    });
+    input.addEventListener('pointerdown', (e) => e.stopPropagation());
+  }
+
+  // Drag the card via header background (not via title input)
+  attachCGListCardDrag(el, listId);
+}
+
+function attachCGListCardDrag(el, listId) {
+  const head = el.querySelector('[data-role="cglc-drag"]');
+  if (!head) return;
+
+  head.addEventListener('pointerdown', (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    // Don't initiate drag if user pressed inside an editable element
+    if (e.target.closest('input, textarea, button')) return;
+    e.preventDefault();
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const elRect = el.getBoundingClientRect();
+    const boardRect = board.getBoundingClientRect();
+    const offset = { x: startX - elRect.left, y: startY - elRect.top };
+    let moved = false;
+    const DRAG_THRESHOLD = 5;
+
+    const onMove = (ev) => {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (!moved && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+        moved = true;
+        el.classList.add('dragging');
+      }
+      if (moved) {
+        ev.preventDefault();
+        const x = Math.max(0, ev.clientX - boardRect.left - offset.x + board.scrollLeft);
+        const y = Math.max(0, ev.clientY - boardRect.top - offset.y + board.scrollTop);
+        el.style.left = x + 'px';
+        el.style.top = y + 'px';
+
+        const cw = el.offsetWidth;
+        const ch = el.offsetHeight;
+        if (x + cw + 200 > board.scrollWidth) {
+          board.style.minWidth = (x + cw + 600) + 'px';
+        }
+        if (y + ch + 200 > board.scrollHeight) {
+          board.style.minHeight = (y + ch + 600) + 'px';
+        }
+      }
+    };
+
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      el.classList.remove('dragging');
+      if (moved) {
+        const x = parseInt(el.style.left) || 0;
+        const y = parseInt(el.style.top) || 0;
+        saveCGListMeta(listId, { position: { x, y } });
+      }
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  });
 }
 
 // Grow board to fit notes (both directions) + buffer space.
 function recomputeBoardSize() {
-  if (activeFilter === 'sequence' || activeFilter === 'cg' || activeFilter === 'cglist') {
+  if (activeFilter === 'sequence' || activeFilter === 'cg') {
     // List-style views size themselves naturally
     board.style.minWidth = '';
     board.style.minHeight = '';
@@ -659,6 +828,17 @@ function recomputeBoardSize() {
     const bottom = (note.y || 0) + h;
     if (right > maxRight) maxRight = right;
     if (bottom > maxBottom) maxBottom = bottom;
+  }
+  // Also account for all CG list cards on the canvas (A, B)
+  if (activeFilter === 'all') {
+    for (const cardEl of board.querySelectorAll('.cg-list-card')) {
+      const lid = cardEl.dataset.listId;
+      const pos = lid ? getCGListPosition(lid) : { x: 0, y: 0 };
+      const cright = pos.x + (cardEl.offsetWidth || 340);
+      const cbottom = pos.y + (cardEl.offsetHeight || 200);
+      if (cright > maxRight) maxRight = cright;
+      if (cbottom > maxBottom) maxBottom = cbottom;
+    }
   }
   const buffer = 500;
   // Default: at least the visible viewport area
@@ -1138,57 +1318,22 @@ function removeCGIdea(noteId, ideaId) {
 }
 
 // ============================================================
-// Global CG List (final / confirmed CG to be produced — stored in meta.cgList)
+// Promote a CG idea (from a memo) to a CG list card
+// Default target is list A (first card). Removes idea from memo, adds to list.
 // ============================================================
-let cglistInputValue = '';   // input box state for the dedicated CG list view
-let cglistInputOpen = false;
-
-function getGlobalCGList() {
-  return (meta && Array.isArray(meta.cgList)) ? meta.cgList : [];
-}
-
-function saveGlobalCGList(newList) {
-  meta = { ...meta, cgList: newList };
-  socket.emit('set_meta', { cgList: newList });
-}
-
-function addGlobalCGListItem(text, source) {
-  // source: { noteId, snippet, category } or null for free entries
-  const newItem = {
-    id: 'cgl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-    text,
-    sourceNoteId: source ? source.noteId : null,
-    sourceSnippet: source ? source.snippet : null,
-    sourceCategory: source ? source.category : null,
-    createdBy: userName,
-    createdAt: new Date().toISOString(),
-  };
-  saveGlobalCGList([...getGlobalCGList(), newItem]);
-  renderBoard();
-}
-
-function removeGlobalCGListItem(itemId) {
-  saveGlobalCGList(getGlobalCGList().filter(i => i.id !== itemId));
-  renderBoard();
-}
-
-// Promote a CG idea (from a memo) to the global CG list.
-// Removes the idea from the memo's cgIdeas and adds an entry to meta.cgList with source info.
-function promoteCGIdeaToList(noteId, ideaId) {
+function promoteCGIdeaToList(noteId, ideaId, targetListId = 'A') {
   const note = notes.find(n => n.id === noteId);
   if (!note) return;
   const idea = (note.cgIdeas || []).find(i => i.id === ideaId);
   if (!idea) return;
 
-  // Add to global CG list with source reference
   const snippet = (note.text || '').slice(0, 30).trim() || '(빈 메모)';
-  addGlobalCGListItem(idea.text, {
+  addCGListItem(targetListId, idea.text, {
     noteId: note.id,
     snippet,
     category: note.category,
   });
 
-  // Remove from memo's cgIdeas
   const updated = {
     ...note,
     cgIdeas: (note.cgIdeas || []).filter(i => i.id !== ideaId),
