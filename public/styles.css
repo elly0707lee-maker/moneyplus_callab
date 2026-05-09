@@ -993,6 +993,53 @@ body {
   word-wrap: break-word;
   white-space: pre-wrap;
   letter-spacing: -0.01em;
+  cursor: text;
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  transition: background 0.12s;
+}
+
+.cglc-text:hover {
+  background: rgba(14, 138, 140, 0.08);
+}
+
+.cglc-edit {
+  width: 100%;
+  border: 1.5px solid var(--cgl);
+  border-radius: 4px;
+  background: white;
+  padding: 5px 8px;
+  font-size: 13px;
+  color: var(--ink);
+  font-family: inherit;
+  outline: none;
+  resize: none;
+  min-height: 24px;
+  max-height: 200px;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+  white-space: pre-wrap;
+  overflow-y: auto;
+  font-weight: 500;
+  -webkit-appearance: none;
+  appearance: none;
+  box-sizing: border-box;
+}
+
+.cglc-edit:focus {
+  border-color: var(--cgl-ink);
+  box-shadow: 0 0 0 2px var(--cgl-bg-soft);
+}
+
+.cglc-item.editing { background: var(--cgl-bg-soft); }
+.cglc-item.editing:hover { background: var(--cgl-bg-soft); }
+
+.cglc-edited {
+  font-size: 9.5px;
+  color: var(--cgl-ink);
+  opacity: 0.7;
+  padding: 0 2px;
 }
 
 .cglc-meta {
