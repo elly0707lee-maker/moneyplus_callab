@@ -566,6 +566,17 @@ function addCGListItem(listId, text, source) {
   };
   saveCGListMeta(listId, { items: [...getCGListItems(listId), newItem] });
   renderBoard();
+  // After re-render, ensure the card's bottom is visible (the new item + input)
+  setTimeout(() => {
+    const cardEl = board.querySelector(`.cg-list-card[data-list-id="${listId}"]`);
+    if (!cardEl) return;
+    const cardRect = cardEl.getBoundingClientRect();
+    const boardRect = board.getBoundingClientRect();
+    if (cardRect.bottom > boardRect.bottom - 20) {
+      const scrollAmount = cardRect.bottom - boardRect.bottom + 60;
+      board.scrollBy({ top: scrollAmount, behavior: 'smooth' });
+    }
+  }, 50);
 }
 
 function removeCGListItem(listId, itemId) {
