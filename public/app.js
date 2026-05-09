@@ -566,10 +566,18 @@ function addCGListItem(listId, text, source) {
   };
   saveCGListMeta(listId, { items: [...getCGListItems(listId), newItem] });
   renderBoard();
-  // After re-render, ensure the card's bottom is visible (the new item + input)
+  // After re-render, ensure the new item (and input row) is in view
   setTimeout(() => {
     const cardEl = board.querySelector(`.cg-list-card[data-list-id="${listId}"]`);
     if (!cardEl) return;
+
+    // 1. If card body has internal scroll (max-height hit), scroll it to bottom
+    const cardBody = cardEl.querySelector('.cglc-body');
+    if (cardBody && cardBody.scrollHeight > cardBody.clientHeight) {
+      cardBody.scrollTo({ top: cardBody.scrollHeight, behavior: 'smooth' });
+    }
+
+    // 2. Also ensure the card's input row is visible (board-level scroll)
     const cardRect = cardEl.getBoundingClientRect();
     const boardRect = board.getBoundingClientRect();
     if (cardRect.bottom > boardRect.bottom - 20) {
