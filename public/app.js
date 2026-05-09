@@ -615,7 +615,8 @@ function createCGListCardEl(listId) {
     <div class="cglc-body">${itemsHtml}</div>
     <div class="cglc-input-row">
       <span class="cglc-input-prefix">+</span>
-      <input type="text" class="cglc-input" placeholder="새 CG 입력 후 Enter..." maxlength="100" />
+      <textarea class="cglc-input" placeholder="새 CG 입력 — Enter로 줄바꿈, Cmd/Ctrl+Enter 또는 ↵로 추가" maxlength="300" rows="1"></textarea>
+      <button class="cglc-submit-btn" data-role="cglc-submit" title="추가 (Cmd+Enter)">↵</button>
     </div>
   `;
 
@@ -712,36 +713,60 @@ function attachCGListCardHandlers(el, listId) {
     }
   }
 
-  // Item input
+  // Item input (textarea — Enter is newline, Cmd/Ctrl+Enter submits)
   const input = el.querySelector('.cglc-input');
+  const submitBtn = el.querySelector('[data-role="cglc-submit"]');
   const state = cgListInputState[listId];
+
+  const submitItem = () => {
+    const text = (state.value || '').trim();
+    if (!text) return;
+    addCGListItem(listId, text, null);
+    state.value = '';
+  };
+
   if (input && state) {
     input.value = state.value || '';
+    const autoResize = () => {
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+    };
+    autoResize();
     if (state.focused) {
       setTimeout(() => {
         input.focus();
         input.setSelectionRange(input.value.length, input.value.length);
+        autoResize();
       }, 30);
     }
-    input.addEventListener('input', (e) => { state.value = e.target.value; });
+    input.addEventListener('input', (e) => {
+      state.value = e.target.value;
+      autoResize();
+    });
     input.addEventListener('focus', () => { state.focused = true; });
     input.addEventListener('blur', () => { state.focused = false; });
     input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
-        const text = (state.value || '').trim();
-        if (text) {
-          addCGListItem(listId, text, null);
-          state.value = '';
-        }
+        submitItem();
       } else if (e.key === 'Escape') {
         e.preventDefault();
         state.value = '';
         input.value = '';
+        autoResize();
         input.blur();
       }
+      // plain Enter: default behavior = insert newline
     });
     input.addEventListener('pointerdown', (e) => e.stopPropagation());
+  }
+
+  if (submitBtn) {
+    submitBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      submitItem();
+    });
+    submitBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
   }
 
   // Drag the card via header background (not via title input)
