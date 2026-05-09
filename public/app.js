@@ -247,7 +247,8 @@ socket.on('meta_updated', (newMeta) => {
   renderMeta();
 
   // Re-render board when CG list data, card position, or card title changed (only on canvas 'all')
-  if ((cgListChanged || cgListPosOrTitleChanged) && activeFilter === 'all') renderBoard();
+  // BUT not while user is editing an item (avoid losing their draft mid-edit)
+  if ((cgListChanged || cgListPosOrTitleChanged) && activeFilter === 'all' && !cglItemEditing) renderBoard();
 
   if (broadcastDateChanged && newMeta.broadcastDate) {
     setTicker(`방송일이 ${formatBroadcastDate(newMeta.broadcastDate)}로 설정되었습니다`);
@@ -586,6 +587,75 @@ function addCGListItemsBatch(listId, texts) {
   scrollCGListToBottom(listId);
 }
 
+// ============================================================
+// Inline edit of a CG list item
+// ============================================================
+let cglItemEditing = null; // { listId, itemId, draftValue }
+
+function startCGItemEdit(listId, itemId) {
+  // If already editing a different item, commit it first
+  if (cglItemEditing && (cglItemEditing.listId !== listId || cglItemEditing.itemId !== itemId)) {
+    commitCGItemEdit(cglItemEditing.listId, cglItemEditing.itemId);
+  }
+  const item = getCGListItems(listId).find(i => i.id === itemId);
+  if (!item) return;
+  cglItemEditing = { listId, itemId, draftValue: item.text };
+  renderBoard();
+  // Focus the textarea after render
+  setTimeout(() => {
+    const ta = board.querySelector(`.cg-list-card[data-list-id="${listId}"] [data-item-id="${itemId}"] .cglc-edit`);
+    if (!ta) return;
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
+  }, 40);
+}
+
+function commitCGItemEdit(listId, itemId) {
+  if (!cglItemEditing || cglItemEditing.listId !== listId || cglItemEditing.itemId !== itemId) return;
+  const newText = (cglItemEditing.draftValue || '').trim();
+  const items = getCGListItems(listId);
+  const idx = items.findIndex(i => i.id === itemId);
+  cglItemEditing = null;
+
+  if (idx === -1) {
+    renderBoard();
+    return;
+  }
+
+  if (!newText) {
+    // Empty after edit → confirm delete or revert
+    if (confirm('내용이 비어있어요. 이 CG를 삭제할까요?')) {
+      removeCGListItem(listId, itemId);
+    } else {
+      renderBoard();
+    }
+    return;
+  }
+
+  if (items[idx].text === newText) {
+    // No actual change
+    renderBoard();
+    return;
+  }
+
+  const updatedItems = [...items];
+  updatedItems[idx] = {
+    ...items[idx],
+    text: newText,
+    lastEditedBy: userName,
+    lastEditedAt: new Date().toISOString(),
+  };
+  saveCGListMeta(listId, { items: updatedItems });
+  renderBoard();
+}
+
+function cancelCGItemEdit() {
+  cglItemEditing = null;
+  renderBoard();
+}
+
 function scrollCGListToBottom(listId) {
   setTimeout(() => {
     const cardEl = board.querySelector(`.cg-list-card[data-list-id="${listId}"]`);
@@ -655,7 +725,7 @@ function createCGListCardEl(listId) {
   const itemsHtml = items.length === 0
     ? `<div class="cglc-empty">메모의 CG 아이디어 옆 <b>→</b> 또는<br/>아래 입력창으로 추가하세요</div>`
     : `<div class="cglc-list">
-        ${items.map((item, i) => createCGListCardItemHtml(item, i + 1)).join('')}
+        ${items.map((item, i) => createCGListCardItemHtml(item, i + 1, listId)).join('')}
       </div>`;
 
   el.innerHTML = `
@@ -676,7 +746,9 @@ function createCGListCardEl(listId) {
   return el;
 }
 
-function createCGListCardItemHtml(item, idx) {
+function createCGListCardItemHtml(item, idx, listId) {
+  const isEditing = cglItemEditing && cglItemEditing.listId === listId && cglItemEditing.itemId === item.id;
+
   let sourceHtml = '';
   if (item.sourceNoteId) {
     const sourceNote = notes.find(n => n.id === item.sourceNoteId);
@@ -694,14 +766,24 @@ function createCGListCardItemHtml(item, idx) {
     sourceHtml = `<span class="cglc-source free">직접 입력</span>`;
   }
 
+  // Edited-by indicator if it was edited
+  const editedNote = item.lastEditedAt && item.lastEditedAt !== item.createdAt
+    ? `<span class="cglc-edited" title="수정됨: ${escapeHtml(item.lastEditedBy || '')}">✎</span>`
+    : '';
+
+  const contentHtml = isEditing
+    ? `<textarea class="cglc-edit" data-role="cglc-edit" maxlength="2000">${escapeHtml(cglItemEditing.draftValue || item.text)}</textarea>`
+    : `<div class="cglc-text" data-role="cglc-text" title="클릭하여 수정">${escapeHtml(item.text)}</div>`;
+
   return `
-    <div class="cglc-item" data-item-id="${item.id}">
+    <div class="cglc-item ${isEditing ? 'editing' : ''}" data-item-id="${item.id}">
       <span class="cglc-num">${idx}.</span>
       <div class="cglc-content">
-        <div class="cglc-text">${escapeHtml(item.text)}</div>
+        ${contentHtml}
         <div class="cglc-meta">
           ${sourceHtml}
           ${authorChipHtml(item.createdBy)}
+          ${editedNote}
         </div>
       </div>
       <button class="cglc-remove" data-cglist-action="remove">×</button>
@@ -710,6 +792,56 @@ function createCGListCardItemHtml(item, idx) {
 }
 
 function attachCGListCardHandlers(el, listId) {
+  // Click on text → enter inline edit mode
+  el.querySelectorAll('[data-role="cglc-text"]').forEach(textEl => {
+    textEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const itemEl = textEl.closest('[data-item-id]');
+      const itemId = itemEl ? itemEl.dataset.itemId : null;
+      if (itemId) startCGItemEdit(listId, itemId);
+    });
+    textEl.addEventListener('pointerdown', (e) => e.stopPropagation());
+  });
+
+  // Edit textarea wiring (when an item is in edit mode)
+  el.querySelectorAll('[data-role="cglc-edit"]').forEach(ta => {
+    const itemEl = ta.closest('[data-item-id]');
+    const itemId = itemEl ? itemEl.dataset.itemId : null;
+    if (!itemId) return;
+
+    // Auto-resize
+    const autoResize = () => {
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
+    };
+    autoResize();
+
+    ta.addEventListener('input', (e) => {
+      if (cglItemEditing && cglItemEditing.itemId === itemId) {
+        cglItemEditing.draftValue = e.target.value;
+      }
+      autoResize();
+    });
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        commitCGItemEdit(listId, itemId);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        cancelCGItemEdit();
+      }
+    });
+    ta.addEventListener('blur', () => {
+      // Slight delay to allow other interactions (e.g. clicking goto/remove buttons)
+      setTimeout(() => {
+        if (cglItemEditing && cglItemEditing.itemId === itemId) {
+          commitCGItemEdit(listId, itemId);
+        }
+      }, 120);
+    });
+    ta.addEventListener('pointerdown', (e) => e.stopPropagation());
+  });
+
   // Remove buttons
   el.querySelectorAll('[data-cglist-action="remove"]').forEach(btn => {
     btn.addEventListener('click', (e) => {
