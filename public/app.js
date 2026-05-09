@@ -566,7 +566,27 @@ function addCGListItem(listId, text, source) {
   };
   saveCGListMeta(listId, { items: [...getCGListItems(listId), newItem] });
   renderBoard();
-  // After re-render, ensure the new item (and input row) is in view
+  scrollCGListToBottom(listId);
+}
+
+// Bulk add — for paste-detected multi-item content
+function addCGListItemsBatch(listId, texts) {
+  const baseTime = Date.now();
+  const newItems = texts.map((text, i) => ({
+    id: 'cgl_' + baseTime + '_' + i + '_' + Math.random().toString(36).slice(2, 7),
+    text,
+    sourceNoteId: null,
+    sourceSnippet: null,
+    sourceCategory: null,
+    createdBy: userName,
+    createdAt: new Date().toISOString(),
+  }));
+  saveCGListMeta(listId, { items: [...getCGListItems(listId), ...newItems] });
+  renderBoard();
+  scrollCGListToBottom(listId);
+}
+
+function scrollCGListToBottom(listId) {
   setTimeout(() => {
     const cardEl = board.querySelector(`.cg-list-card[data-list-id="${listId}"]`);
     if (!cardEl) return;
@@ -585,6 +605,19 @@ function addCGListItem(listId, text, source) {
       board.scrollBy({ top: scrollAmount, behavior: 'smooth' });
     }
   }, 50);
+}
+
+// Parse a multi-line paste into separate CG items based on broadcast markers.
+// Detects markers like 통CG7>, 단CG3~5>, 그CG10>, CG12>, etc.
+// Each marker starts a new item; subsequent lines belong to that item.
+function parseCGListPaste(text) {
+  // Lookahead split — keeps the marker as part of the next chunk
+  const splitRegex = /(?=^[가-힣]*CG\d+(?:~\d+)?>)/mi;
+  const startsWithMarker = /^[가-힣]*CG\d+(?:~\d+)?>/i;
+  return text
+    .split(splitRegex)
+    .map(p => p.trim())
+    .filter(p => p.length > 0 && startsWithMarker.test(p));
 }
 
 function removeCGListItem(listId, itemId) {
@@ -634,7 +667,7 @@ function createCGListCardEl(listId) {
     <div class="cglc-body">${itemsHtml}</div>
     <div class="cglc-input-row">
       <span class="cglc-input-prefix">+</span>
-      <textarea class="cglc-input" placeholder="새 CG 입력 — Enter로 줄바꿈, Cmd/Ctrl+Enter 또는 ↵로 추가" maxlength="300" rows="1"></textarea>
+      <textarea class="cglc-input" placeholder="새 CG 입력 — 통CG7>, 통CG8~10> 등 여러 개 붙여넣으면 자동 분리. Cmd+Enter 또는 ↵로 추가" maxlength="2000" rows="1"></textarea>
       <button class="cglc-submit-btn" data-role="cglc-submit" title="추가 (Cmd+Enter)">↵</button>
     </div>
   `;
@@ -740,7 +773,14 @@ function attachCGListCardHandlers(el, listId) {
   const submitItem = () => {
     const text = (state.value || '').trim();
     if (!text) return;
-    addCGListItem(listId, text, null);
+    // Detect "bulk paste" — if 2+ broadcast markers detected, split into items
+    const items = parseCGListPaste(text);
+    if (items.length >= 2) {
+      addCGListItemsBatch(listId, items);
+      setTicker(`CG ${items.length}개를 자동으로 분리해서 추가했어요`);
+    } else {
+      addCGListItem(listId, text, null);
+    }
     state.value = '';
   };
 
