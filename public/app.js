@@ -227,10 +227,24 @@ socket.on('users_count', (count) => {
 });
 
 socket.on('meta_updated', (newMeta) => {
+  const prevMeta = meta || {};
+  const broadcastDateChanged =
+    (prevMeta.broadcastDate || null) !== (newMeta.broadcastDate || null);
+  const cgListChanged =
+    JSON.stringify(prevMeta.cgList || []) !== JSON.stringify(newMeta.cgList || []);
+
   meta = newMeta;
   renderMeta();
-  if (newMeta.broadcastDate) {
+
+  if (cgListChanged && activeFilter === 'cglist') renderBoard();
+  // Always update the count chip
+  const cglistEl = document.getElementById('count-cglist');
+  if (cglistEl) cglistEl.textContent = (newMeta.cgList || []).length;
+
+  if (broadcastDateChanged && newMeta.broadcastDate) {
     setTicker(`방송일이 ${formatBroadcastDate(newMeta.broadcastDate)}로 설정되었습니다`);
+  } else if (cgListChanged) {
+    setTicker('CG 리스트가 업데이트되었습니다');
   }
 });
 
@@ -299,7 +313,12 @@ function getVisibleNotes() {
 function updateCounts() {
   document.getElementById('count-all').textContent = notes.length;
   document.getElementById('count-confirmed').textContent = notes.filter(n => n.confirmed).length;
-  document.getElementById('count-cg').textContent = notes.filter(n => (n.cgIdeas || []).length > 0).length;
+  // cg count = total CG ideas across all memos (not memo count)
+  let cgCount = 0;
+  for (const n of notes) cgCount += (n.cgIdeas || []).length;
+  document.getElementById('count-cg').textContent = cgCount;
+  const cglistEl = document.getElementById('count-cglist');
+  if (cglistEl) cglistEl.textContent = getGlobalCGList().length;
   const seqEl = document.getElementById('count-sequence');
   if (seqEl) seqEl.textContent = notes.filter(n => n.confirmed).length;
 }
@@ -309,11 +328,29 @@ function updateCounts() {
 // ============================================================
 function renderBoard() {
   const isSequence = activeFilter === 'sequence';
+  const isCGIdeas = activeFilter === 'cg';
+  const isCGFinal = activeFilter === 'cglist';
   board.classList.toggle('is-sequence', isSequence);
+  board.classList.toggle('is-cg-list', isCGIdeas);
+  board.classList.toggle('is-cg-final', isCGFinal);
   if (isSequence) ensureOrders();
 
   updateCounts();
   board.innerHTML = '';
+
+  // CG ideas (brainstorm) — flat collection of every CG idea across memos
+  if (isCGIdeas) {
+    board.appendChild(renderCGList());
+    recomputeBoardSize();
+    return;
+  }
+
+  // CG final list — global, separate from memos (stored in meta.cgList)
+  if (isCGFinal) {
+    board.appendChild(renderCGFinalView());
+    recomputeBoardSize();
+    return;
+  }
 
   const visible = getVisibleNotes();
 
@@ -331,9 +368,8 @@ function renderBoard() {
         <div class="empty-state-desc">메모 위 ✓ 버튼으로 확정 표시하면 자동으로 Q1, Q2... 순서가 매겨집니다</div>
       `;
     } else {
-      const filterName = activeFilter === 'confirmed' ? '확정된' : 'CG 아이디어가 있는';
       empty.innerHTML = `
-        <div class="empty-state-title">${filterName} 메모가 없어요</div>
+        <div class="empty-state-title">확정된 메모가 없어요</div>
         <div class="empty-state-desc">'전체' 필터를 눌러서 모든 메모를 볼 수 있습니다</div>
       `;
     }
@@ -362,10 +398,252 @@ function renderBoard() {
   recomputeBoardSize();
 }
 
+// ============================================================
+// CG list view (flat collection of all CG ideas across all memos)
+// ============================================================
+function renderCGList() {
+  const wrap = document.createElement('div');
+  wrap.className = 'cg-list-container';
+
+  // Collect every CG idea with its parent note
+  const items = [];
+  for (const note of notes) {
+    const cgIdeas = note.cgIdeas || [];
+    for (const idea of cgIdeas) {
+      items.push({ idea, note });
+    }
+  }
+
+  if (items.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.style.position = 'relative';
+    empty.style.inset = 'auto';
+    empty.style.marginTop = '60px';
+    empty.innerHTML = `
+      <div class="empty-state-title">아직 모인 CG 아이디어가 없어요</div>
+      <div class="empty-state-desc">메모를 펼친 뒤 <b>＋ CG 아이디어</b> 로 추가할 수 있어요</div>
+    `;
+    wrap.appendChild(empty);
+    return wrap;
+  }
+
+  const help = document.createElement('div');
+  help.className = 'cg-list-help';
+  help.innerHTML = `지금까지 모인 <b>CG 아이디어 ${items.length}개</b> — <b>↗</b> 누르면 원본 메모로 이동`;
+  wrap.appendChild(help);
+
+  // Newest first
+  items.sort((a, b) => {
+    const ta = new Date(a.idea.createdAt || 0).getTime();
+    const tb = new Date(b.idea.createdAt || 0).getTime();
+    return tb - ta;
+  });
+
+  for (const { idea, note } of items) {
+    wrap.appendChild(createCGListItemEl(idea, note));
+  }
+
+  return wrap;
+}
+
+function createCGListItemEl(idea, note) {
+  const cat = getCat(note.category);
+  const fullText = note.text || '';
+  const memoSnippet = fullText.slice(0, 60).trim() || '(빈 메모)';
+  const truncated = fullText.length > 60 ? '…' : '';
+
+  const el = document.createElement('div');
+  el.className = 'cg-list-item';
+  el.innerHTML = `
+    <div class="cg-list-text">
+      <div class="cg-list-text-main">${escapeHtml(idea.text)}</div>
+      <div class="cg-list-meta">
+        <span class="chip-cat-mini">
+          <span class="cat-dot" style="background:${cat.color};"></span>
+          <span>${cat.ko}</span>
+        </span>
+        <span class="memo-snippet">${escapeHtml(memoSnippet)}${truncated}</span>
+        <span class="meta-sep">·</span>
+        <span>${escapeHtml(idea.createdBy || '익명')}</span>
+        <span class="meta-sep">·</span>
+        <span>${formatTime(idea.createdAt)}</span>
+      </div>
+    </div>
+    <div class="cg-list-actions">
+      <button class="cg-list-action-btn" data-cgl-action="goto" title="원본 메모 보기">↗</button>
+      <button class="cg-list-action-btn" data-cgl-action="remove" title="CG 아이디어 삭제">×</button>
+    </div>
+  `;
+
+  el.querySelector('[data-cgl-action="remove"]').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (confirm('이 CG 아이디어를 삭제할까요?')) {
+      removeCGIdea(note.id, idea.id);
+    }
+  });
+
+  el.querySelector('[data-cgl-action="goto"]').addEventListener('click', (e) => {
+    e.stopPropagation();
+    // Switch to all view, then locate and pulse the parent memo
+    activeFilter = 'all';
+    document.querySelectorAll('.filter-pill').forEach(p =>
+      p.classList.toggle('active', p.dataset.filter === 'all')
+    );
+    renderBoard();
+    requestAnimationFrame(() => {
+      const noteEl = board.querySelector(`[data-id="${note.id}"]`);
+      if (!noteEl) return;
+      noteEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+      noteEl.classList.add('cg-pulse');
+      setTimeout(() => noteEl.classList.remove('cg-pulse'), 1800);
+    });
+  });
+
+  return el;
+}
+
+// ============================================================
+// CG Final list view (global, stored in meta.cgList)
+// ============================================================
+function renderCGFinalView() {
+  const wrap = document.createElement('div');
+  wrap.className = 'cg-final-container';
+
+  const header = document.createElement('div');
+  header.className = 'cg-final-header';
+  header.innerHTML = `
+    <div class="cg-final-title">📺 최종 CG 리스트</div>
+    <div class="cg-final-sub">방송에서 만들 CG들. 메모의 CG 아이디어 옆 <b>→</b> 버튼으로 채택하거나, 아래에 직접 입력</div>
+  `;
+  wrap.appendChild(header);
+
+  const items = getGlobalCGList();
+
+  if (items.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'cg-final-empty';
+    empty.innerHTML = `
+      <div class="empty-state-title">아직 비어있어요</div>
+      <div class="empty-state-desc">메모의 CG 아이디어 옆 → 버튼을 누르거나, 아래 입력창에 직접 입력</div>
+    `;
+    wrap.appendChild(empty);
+  } else {
+    const list = document.createElement('div');
+    list.className = 'cg-final-list';
+    items.forEach((item, idx) => {
+      list.appendChild(createCGFinalItemEl(item, idx + 1));
+    });
+    wrap.appendChild(list);
+  }
+
+  // Input row at bottom — always visible
+  const inputRow = document.createElement('div');
+  inputRow.className = 'cg-final-input-row';
+  inputRow.innerHTML = `
+    <span class="cg-final-input-prefix">📺</span>
+    <input type="text" class="cg-final-input" placeholder="새 CG 입력 후 Enter..." maxlength="100" />
+  `;
+  const input = inputRow.querySelector('input');
+  input.value = cglistInputValue || '';
+  if (cglistInputOpen) setTimeout(() => input.focus(), 30);
+  input.addEventListener('input', (e) => { cglistInputValue = e.target.value; });
+  input.addEventListener('focus', () => { cglistInputOpen = true; });
+  input.addEventListener('blur', () => { cglistInputOpen = false; });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const text = (cglistInputValue || '').trim();
+      if (text) {
+        addGlobalCGListItem(text, null);
+        cglistInputValue = '';
+      }
+    } else if (e.key === 'Escape') {
+      cglistInputValue = '';
+      input.value = '';
+      input.blur();
+    }
+  });
+  wrap.appendChild(inputRow);
+
+  return wrap;
+}
+
+function createCGFinalItemEl(item, displayIdx) {
+  const el = document.createElement('div');
+  el.className = 'cg-final-item';
+
+  // Source memo info (if linked)
+  let sourceHtml = '';
+  if (item.sourceNoteId) {
+    const sourceNote = notes.find(n => n.id === item.sourceNoteId);
+    if (sourceNote) {
+      const cat = getCat(sourceNote.category || item.sourceCategory);
+      const snippet = item.sourceSnippet || (sourceNote.text || '').slice(0, 30);
+      sourceHtml = `
+        <button class="cg-final-source" data-cglist-action="goto" data-note-id="${sourceNote.id}" title="원본 메모 보기">
+          <span class="cat-dot" style="background:${cat.color};"></span>
+          <span class="cg-final-source-name">${cat.ko}</span>
+          ${snippet ? `<span class="cg-final-source-snippet">· ${escapeHtml(snippet)}</span>` : ''}
+          <span class="cg-final-source-arrow">↗</span>
+        </button>
+      `;
+    } else {
+      // source memo deleted
+      sourceHtml = `<span class="cg-final-source orphan">출처 메모 삭제됨</span>`;
+    }
+  } else {
+    sourceHtml = `<span class="cg-final-source free">직접 입력</span>`;
+  }
+
+  el.innerHTML = `
+    <div class="cg-final-num">${displayIdx}</div>
+    <div class="cg-final-body">
+      <div class="cg-final-text">${escapeHtml(item.text)}</div>
+      <div class="cg-final-meta">
+        ${sourceHtml}
+        <span class="meta-sep">·</span>
+        <span>${escapeHtml(item.createdBy || '익명')}</span>
+        <span class="meta-sep">·</span>
+        <span>${formatTime(item.createdAt)}</span>
+      </div>
+    </div>
+    <button class="cg-final-remove" data-cglist-action="remove" title="삭제">×</button>
+  `;
+
+  el.querySelector('[data-cglist-action="remove"]').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (confirm('이 CG 항목을 삭제할까요?')) {
+      removeGlobalCGListItem(item.id);
+    }
+  });
+
+  const gotoBtn = el.querySelector('[data-cglist-action="goto"]');
+  if (gotoBtn) {
+    gotoBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      activeFilter = 'all';
+      document.querySelectorAll('.filter-pill').forEach(p =>
+        p.classList.toggle('active', p.dataset.filter === 'all')
+      );
+      renderBoard();
+      requestAnimationFrame(() => {
+        const noteEl = board.querySelector(`[data-id="${item.sourceNoteId}"]`);
+        if (!noteEl) return;
+        noteEl.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        noteEl.classList.add('cg-pulse');
+        setTimeout(() => noteEl.classList.remove('cg-pulse'), 1800);
+      });
+    });
+  }
+
+  return el;
+}
+
 // Grow board to fit notes (both directions) + buffer space.
 function recomputeBoardSize() {
-  if (activeFilter === 'sequence') {
-    // Sequence is a normal vertical list — let it size itself naturally.
+  if (activeFilter === 'sequence' || activeFilter === 'cg' || activeFilter === 'cglist') {
+    // List-style views size themselves naturally
     board.style.minWidth = '';
     board.style.minHeight = '';
     return;
@@ -479,6 +757,7 @@ function renderCGSection(note, cgIdeas, isInputOpen) {
     <div class="note-cg-item" data-idea-id="${idea.id}">
       <span class="bullet">•</span>
       <span class="text">${escapeHtml(idea.text)}</span>
+      <button class="promote-cgl" data-cg-action="promote" data-note-id="${note.id}" data-idea-id="${idea.id}" title="CG 리스트로 채택">→</button>
       <button class="remove" data-cg-action="remove" data-note-id="${note.id}" data-idea-id="${idea.id}">×</button>
     </div>
   `).join('');
@@ -604,6 +883,7 @@ function attachNoteHandlers(el, note, isSequence = false) {
       const cgAction = btn.dataset.cgAction;
       if (cgAction === 'open-input') startCGInput(note.id);
       else if (cgAction === 'remove') removeCGIdea(note.id, btn.dataset.ideaId);
+      else if (cgAction === 'promote') promoteCGIdeaToList(note.id, btn.dataset.ideaId);
     });
   });
 
@@ -848,6 +1128,71 @@ function removeCGIdea(noteId, ideaId) {
   const updated = {
     ...note,
     cgIdeas: (note.cgIdeas || []).filter(i => i.id !== ideaId),
+    lastEditedBy: userName,
+    lastEditedAt: new Date().toISOString(),
+  };
+  const idx = notes.findIndex(n => n.id === noteId);
+  if (idx !== -1) notes[idx] = updated;
+  socket.emit('update_note', updated);
+  renderBoard();
+}
+
+// ============================================================
+// Global CG List (final / confirmed CG to be produced — stored in meta.cgList)
+// ============================================================
+let cglistInputValue = '';   // input box state for the dedicated CG list view
+let cglistInputOpen = false;
+
+function getGlobalCGList() {
+  return (meta && Array.isArray(meta.cgList)) ? meta.cgList : [];
+}
+
+function saveGlobalCGList(newList) {
+  meta = { ...meta, cgList: newList };
+  socket.emit('set_meta', { cgList: newList });
+}
+
+function addGlobalCGListItem(text, source) {
+  // source: { noteId, snippet, category } or null for free entries
+  const newItem = {
+    id: 'cgl_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+    text,
+    sourceNoteId: source ? source.noteId : null,
+    sourceSnippet: source ? source.snippet : null,
+    sourceCategory: source ? source.category : null,
+    createdBy: userName,
+    createdAt: new Date().toISOString(),
+  };
+  saveGlobalCGList([...getGlobalCGList(), newItem]);
+  renderBoard();
+}
+
+function removeGlobalCGListItem(itemId) {
+  saveGlobalCGList(getGlobalCGList().filter(i => i.id !== itemId));
+  renderBoard();
+}
+
+// Promote a CG idea (from a memo) to the global CG list.
+// Removes the idea from the memo's cgIdeas and adds an entry to meta.cgList with source info.
+function promoteCGIdeaToList(noteId, ideaId) {
+  const note = notes.find(n => n.id === noteId);
+  if (!note) return;
+  const idea = (note.cgIdeas || []).find(i => i.id === ideaId);
+  if (!idea) return;
+
+  // Add to global CG list with source reference
+  const snippet = (note.text || '').slice(0, 30).trim() || '(빈 메모)';
+  addGlobalCGListItem(idea.text, {
+    noteId: note.id,
+    snippet,
+    category: note.category,
+  });
+
+  // Remove from memo's cgIdeas
+  const updated = {
+    ...note,
+    cgIdeas: (note.cgIdeas || []).filter(i => i.id !== ideaId),
+    history: appendHistory(note, makeHistoryEntry('cgl_promote', `CG 채택: "${idea.text.length > 20 ? idea.text.slice(0, 20) + '…' : idea.text}"`)),
     lastEditedBy: userName,
     lastEditedAt: new Date().toISOString(),
   };
