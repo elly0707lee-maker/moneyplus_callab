@@ -990,6 +990,7 @@ body {
   color: var(--ink);
   line-height: 1.4;
   word-wrap: break-word;
+  white-space: pre-wrap;
   letter-spacing: -0.01em;
 }
 
@@ -1071,8 +1072,8 @@ body {
 
 .cglc-input-row {
   display: flex;
-  align-items: center;
-  gap: 5px;
+  align-items: flex-end;
+  gap: 6px;
   padding: 8px 10px 9px;
   border-top: 1px solid var(--cgl-bg);
   background: white;
@@ -1083,6 +1084,7 @@ body {
   font-weight: 700;
   font-size: 13px;
   flex-shrink: 0;
+  padding-bottom: 5px;
 }
 
 .cglc-input {
@@ -1097,9 +1099,40 @@ body {
   -webkit-appearance: none;
   appearance: none;
   letter-spacing: -0.01em;
+  resize: none;
+  min-height: 22px;
+  max-height: 120px;
+  line-height: 1.4;
+  overflow-y: auto;
 }
 
 .cglc-input::placeholder { color: var(--ink-faint); }
+
+.cglc-submit-btn {
+  flex-shrink: 0;
+  background: var(--cgl-bg);
+  border: 1px solid var(--cgl-bg);
+  color: var(--cgl-ink);
+  font-size: 13px;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 700;
+  border-radius: 6px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+}
+
+.cglc-submit-btn:hover, .cglc-submit-btn:active {
+  background: var(--cgl);
+  border-color: var(--cgl);
+  color: white;
+}
 
 /* ===== Note footer ===== */
 .note-foot {
