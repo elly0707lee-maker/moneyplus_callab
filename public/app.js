@@ -656,6 +656,111 @@ function cancelCGItemEdit() {
   renderBoard();
 }
 
+// ============================================================
+// Drag-to-reorder CG items by their bullet number
+// ============================================================
+function attachCGItemDragHandle(itemEl, listId, itemId) {
+  const handle = itemEl.querySelector('.cglc-num');
+  if (!handle) return;
+
+  handle.addEventListener('pointerdown', (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    e.stopPropagation();
+
+    const startY = e.clientY;
+    const card = itemEl.closest('.cg-list-card');
+    if (!card) return;
+    const list = card.querySelector('.cglc-list');
+    if (!list) return;
+
+    let draggingActive = false;
+    let newIdx = -1;
+    let indicator = null;
+
+    const ensureIndicator = () => {
+      if (indicator) return indicator;
+      indicator = document.createElement('div');
+      indicator.className = 'cglc-drop-indicator';
+      list.style.position = 'relative';
+      list.appendChild(indicator);
+      return indicator;
+    };
+
+    const onMove = (ev) => {
+      const dy = ev.clientY - startY;
+      if (!draggingActive && Math.abs(dy) > 5) {
+        draggingActive = true;
+        itemEl.classList.add('cglc-item-dragging');
+        ev.preventDefault();
+      }
+      if (!draggingActive) return;
+      ev.preventDefault();
+
+      itemEl.style.transform = `translateY(${dy}px)`;
+      itemEl.style.zIndex = '300';
+
+      // Compute insertion index based on cursor Y vs other items' midpoints
+      const itemEls = Array.from(list.querySelectorAll('.cglc-item'));
+      const cursorY = ev.clientY;
+      let foundIdx = itemEls.length;
+      for (let i = 0; i < itemEls.length; i++) {
+        if (itemEls[i] === itemEl) continue;
+        const rect = itemEls[i].getBoundingClientRect();
+        const mid = rect.top + rect.height / 2;
+        if (cursorY < mid) { foundIdx = i; break; }
+      }
+      newIdx = foundIdx;
+
+      // Position drop indicator
+      const ind = ensureIndicator();
+      const listRect = list.getBoundingClientRect();
+      let targetY;
+      if (foundIdx >= itemEls.length) {
+        // After all items
+        const others = itemEls.filter(x => x !== itemEl);
+        const last = others[others.length - 1];
+        if (last) targetY = last.getBoundingClientRect().bottom - listRect.top;
+        else targetY = 0;
+      } else {
+        targetY = itemEls[foundIdx].getBoundingClientRect().top - listRect.top;
+      }
+      ind.style.top = (targetY - 2) + 'px';
+    };
+
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+
+      itemEl.classList.remove('cglc-item-dragging');
+      itemEl.style.transform = '';
+      itemEl.style.zIndex = '';
+
+      if (indicator) { indicator.remove(); indicator = null; }
+
+      if (!draggingActive) return;
+
+      const items = getCGListItems(listId);
+      const oldIdx = items.findIndex(i => i.id === itemId);
+      if (oldIdx === -1 || newIdx === -1) return;
+
+      const adjustedNewIdx = newIdx > oldIdx ? newIdx - 1 : newIdx;
+      if (adjustedNewIdx === oldIdx) return; // no actual change
+
+      const newItems = [...items];
+      const [moved] = newItems.splice(oldIdx, 1);
+      newItems.splice(adjustedNewIdx, 0, moved);
+
+      saveCGListMeta(listId, { items: newItems });
+      renderBoard();
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  });
+}
+
 function scrollCGListToBottom(listId) {
   setTimeout(() => {
     const cardEl = board.querySelector(`.cg-list-card[data-list-id="${listId}"]`);
@@ -801,6 +906,12 @@ function attachCGListCardHandlers(el, listId) {
       if (itemId) startCGItemEdit(listId, itemId);
     });
     textEl.addEventListener('pointerdown', (e) => e.stopPropagation());
+  });
+
+  // Drag bullets to reorder items within the card
+  el.querySelectorAll('.cglc-item').forEach(itemEl => {
+    const itemId = itemEl.dataset.itemId;
+    if (itemId) attachCGItemDragHandle(itemEl, listId, itemId);
   });
 
   // Edit textarea wiring (when an item is in edit mode)
