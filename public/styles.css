@@ -942,9 +942,6 @@ body {
 
 .cglc-body {
   padding: 8px 6px;
-  max-height: 360px;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
 }
 
 .cglc-empty {
@@ -1645,7 +1642,6 @@ body {
   .note { width: 240px; }
 
   .cg-list-card { width: 280px; }
-  .cglc-body { max-height: 280px; }
 
   .note-action-btn { width: 30px; height: 30px; font-size: 14px; }
 
